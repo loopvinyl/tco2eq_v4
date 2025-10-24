@@ -1,4 +1,4 @@
-vamos ajustar o script para utiliar o contrato CarbonDec25 até vencer e depois utilizar o proximo automaticamente: import streamlit as st
+import streamlit as st
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -1000,7 +1000,7 @@ if st.session_state.get('run_simulation', False):
 
         # Teste T pareado
         ttest_pareado, p_ttest_pareado = stats.ttest_rel(results_array_tese, results_array_unfccc)
-        st.write(f"Teste T pareado: Estatística t = **{ttet_pareado:.5f}**, P-valor = **{p_ttest_pareado:.5f}**")
+        st.write(f"Teste T pareado: Estatística t = **{ttest_pareado:.5f}**, P-valor = **{p_ttest_pareado:.5f}**")
 
         # Teste de Wilcoxon para amostras pareadas
         wilcoxon_stat, p_wilcoxon = stats.wilcoxon(results_array_tese, results_array_unfccc)
