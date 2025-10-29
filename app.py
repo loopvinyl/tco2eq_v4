@@ -1,8 +1,10 @@
+import requests
+from bs4 import BeautifulSoup
 import streamlit as st
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from datetime import datetime
+from datetime import datetime, timedelta
 import seaborn as sns
 from scipy import stats
 from scipy.signal import fftconvolve
@@ -11,13 +13,6 @@ import warnings
 from matplotlib.ticker import FuncFormatter
 from SALib.sample.sobol import sample
 from SALib.analyze.sobol import analyze
-
-# Tentar importar yfinance com fallback
-try:
-    import yfinance as yf
-    YFINANCE_AVAILABLE = True
-except ImportError:
-    YFINANCE_AVAILABLE = False
 
 np.random.seed(50)  # Garante reprodutibilidade
 
@@ -32,133 +27,125 @@ plt.rcParams['font.size'] = 10
 sns.set_style("whitegrid")
 
 # =============================================================================
-# INICIALIZAÇÃO DA SESSION STATE
+# FUNÇÕES DE COTAÇÃO AUTOMÁTICA DO CARBONO E CÂMBIO (DO V2)
 # =============================================================================
 
-# Inicializar todas as variáveis de session state necessárias
-def inicializar_session_state():
-    if 'preco_carbono' not in st.session_state:
-        st.session_state.preco_carbono = 85.50
-    if 'moeda_carbono' not in st.session_state:
-        st.session_state.moeda_carbono = "€"
-    if 'taxa_cambio' not in st.session_state:
-        st.session_state.taxa_cambio = 5.50
-    if 'moeda_real' not in st.session_state:
-        st.session_state.moeda_real = "R$"
-    if 'cotacao_atualizada' not in st.session_state:
-        st.session_state.cotacao_atualizada = False
-    if 'run_simulation' not in st.session_state:
-        st.session_state.run_simulation = False
-    if 'mostrar_atualizacao' not in st.session_state:
-        st.session_state.mostrar_atualizacao = False
-    
-    # Inicializar ano_contrato com o ano atual
-    if 'ano_contrato' not in st.session_state:
-        ano_atual = datetime.now().year
-        mes_atual = datetime.now().month
-        if mes_atual >= 9:
-            st.session_state.ano_contrato = ano_atual + 1
-        else:
-            st.session_state.ano_contrato = ano_atual
-
-# Chamar a inicialização
-inicializar_session_state()
-
-# Título do aplicativo
-st.title("Simulador de Emissões de tCO₂eq")
-st.markdown("""
-Esta ferramenta projeta os Créditos de Carbono ao calcular as emissões de gases de efeito estufa para dois contextos de gestão de resíduos
-""")
-
-# =============================================================================
-# FUNÇÕES DE COTAÇÃO AUTOMÁTICA DO CARBONO E CÂMBIO
-# =============================================================================
-
-def obter_ticker_carbono_atual():
+def obter_cotacao_carbono_investing():
     """
-    Determina automaticamente o ticker do contrato futuro de carbono mais relevante
+    Obtém a cotação em tempo real do carbono via web scraping do Investing.com
     """
-    ano_atual = datetime.now().year
-    mes_atual = datetime.now().month
-    
-    # Lógica: a partir de setembro, começa a migrar para o próximo ano
-    if mes_atual >= 9:
-        ano_contrato = ano_atual + 1
-    else:
-        ano_contrato = ano_atual
-    
-    # Formata o ano para 2 dígitos (25, 26, etc.)
-    ano_2_digitos = str(ano_contrato)[-2:]
-    
-    ticker = f'CO2Z{ano_2_digitos}.NYB'
-    return ticker, ano_contrato
+    try:
+        url = "https://www.investing.com/commodities/carbon-emissions"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Referer': 'https://www.investing.com/'
+        }
+        
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Várias estratégias para encontrar o preço
+        selectores = [
+            '[data-test="instrument-price-last"]',
+            '.text-2xl',
+            '.last-price-value',
+            '.instrument-price-last',
+            '.pid-1062510-last',
+            '.float_lang_base_1',
+            '.top.bold.inlineblock',
+            '#last_last'
+        ]
+        
+        preco = None
+        fonte = "Investing.com"
+        
+        for seletor in selectores:
+            try:
+                elemento = soup.select_one(seletor)
+                if elemento:
+                    texto_preco = elemento.text.strip().replace(',', '')
+                    # Remover caracteres não numéricos exceto ponto
+                    texto_preco = ''.join(c for c in texto_preco if c.isdigit() or c == '.')
+                    if texto_preco:
+                        preco = float(texto_preco)
+                        break
+            except (ValueError, AttributeError):
+                continue
+        
+        if preco is not None:
+            return preco, "€", "Carbon Emissions Future", True, fonte
+        
+        # Tentativa alternativa: procurar por padrões numéricos no HTML
+        import re
+        padroes_preco = [
+            r'"last":"([\d,]+)"',
+            r'data-last="([\d,]+)"',
+            r'last_price["\']?:\s*["\']?([\d,]+)',
+            r'value["\']?:\s*["\']?([\d,]+)'
+        ]
+        
+        html_texto = str(soup)
+        for padrao in padroes_preco:
+            matches = re.findall(padrao, html_texto)
+            for match in matches:
+                try:
+                    preco_texto = match.replace(',', '')
+                    preco = float(preco_texto)
+                    if 50 < preco < 200:  # Faixa razoável para carbono
+                        return preco, "€", "Carbon Emissions Future", True, fonte
+                except ValueError:
+                    continue
+                    
+        return None, None, None, False, fonte
+        
+    except Exception as e:
+        return None, None, None, False, f"Investing.com - Erro: {str(e)}"
 
 def obter_cotacao_carbono():
     """
-    Obtém a cotação em tempo real do contrato futuro de carbono atual
+    Obtém a cotação em tempo real do carbono - usa apenas Investing.com
     """
-    if not YFINANCE_AVAILABLE:
-        ticker_atual, ano_contrato = obter_ticker_carbono_atual()
-        return 85.50, "€", f"EUA Carbon Dec {ano_contrato} (yfinance não disponível)", False
+    # Tentar via Investing.com
+    preco, moeda, contrato_info, sucesso, fonte = obter_cotacao_carbono_investing()
     
-    try:
-        # Obtém o ticker atual automaticamente
-        ticker_atual, ano_contrato = obter_ticker_carbono_atual()
-        ano_2_digitos = str(ano_contrato)[-2:]
-        
-        simbolos_tentativas = [
-            ticker_atual,                    # Contrato atual (ex: CO2Z25.NYB)
-            f'CFIZ{ano_2_digitos}.NYB',     # Alternativa com mesmo ano
-            'CARBON-FUTURE',                # Genérico
-        ]
-        
-        cotacao = None
-        simbolo_usado = None
-        
-        for simbolo in simbolos_tentativas:
-            try:
-                ticker = yf.Ticker(simbolo)
-                hist = ticker.history(period='1d')
-                
-                if not hist.empty and not pd.isna(hist['Close'].iloc[-1]):
-                    cotacao = hist['Close'].iloc[-1]
-                    simbolo_usado = simbolo
-                    break
-                    
-            except Exception as e:
-                continue
-        
-        if cotacao is None:
-            # Fallback para dados de exemplo
-            return 85.50, "€", f"EUA Carbon Dec {ano_contrato} (Referência)", False
-        
-        return cotacao, "€", f"EUA Carbon Futures Dec {ano_contrato}", True
-        
-    except Exception as e:
-        ticker_atual, ano_contrato = obter_ticker_carbono_atual()
-        return 85.50, "€", f"EUA Carbon Dec {ano_contrato} (Erro)", False
+    if sucesso:
+        return preco, moeda, f"{contrato_info}", True, fonte
+    
+    # Fallback para valor padrão
+    return 85.50, "€", "Carbon Emissions (Referência)", False, "Referência"
 
 def obter_cotacao_euro_real():
     """
     Obtém a cotação em tempo real do Euro em relação ao Real Brasileiro
     """
-    if not YFINANCE_AVAILABLE:
-        return 5.50, "R$", False
+    try:
+        # API do BCB
+        url = "https://economia.awesomeapi.com.br/last/EUR-BRL"
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            cotacao = float(data['EURBRL']['bid'])
+            return cotacao, "R$", True, "AwesomeAPI"
+    except:
+        pass
     
     try:
-        # Ticker para EUR/BRL (Euro para Real Brasileiro)
-        ticker = yf.Ticker("EURBRL=X")
-        hist = ticker.history(period='1d')
-        
-        if not hist.empty and not pd.isna(hist['Close'].iloc[-1]):
-            cotacao = hist['Close'].iloc[-1]
-            return cotacao, "R$", True
-        else:
-            # Fallback para valor de referência
-            return 5.50, "R$", False
-            
-    except Exception as e:
-        return 5.50, "R$", False
+        # Fallback para API alternativa
+        url = "https://api.exchangerate-api.com/v4/latest/EUR"
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            cotacao = data['rates']['BRL']
+            return cotacao, "R$", True, "ExchangeRate-API"
+    except:
+        pass
+    
+    # Fallback para valor de referência
+    return 5.50, "R$", False, "Referência"
 
 def calcular_valor_creditos(emissoes_evitadas_tco2eq, preco_carbono_por_tonelada, moeda, taxa_cambio=1):
     """
@@ -169,66 +156,50 @@ def calcular_valor_creditos(emissoes_evitadas_tco2eq, preco_carbono_por_tonelada
 
 def exibir_cotacao_carbono():
     """
-    Exibe a cotação do carbono com informações sobre o contrato atual
+    Exibe a cotação do carbono com informações - ATUALIZADA AUTOMATICAMENTE
     """
     st.sidebar.header("💰 Mercado de Carbono e Câmbio")
     
-    if not YFINANCE_AVAILABLE:
-        st.sidebar.warning("⚠️ **yfinance não instalado**")
-        st.sidebar.info("Para cotações em tempo real, execute:")
-        st.sidebar.code("pip install yfinance")
+    # Atualização automática na primeira execução
+    if not st.session_state.get('cotacao_carregada', False):
+        st.session_state.mostrar_atualizacao = True
+        st.session_state.cotacao_carregada = True
     
     # Botão para atualizar cotações
-    if st.sidebar.button("🔄 Atualizar Cotações"):
-        st.session_state.cotacao_atualizada = True
-        st.session_state.mostrar_atualizacao = True
-
-    # Obtém informações do contrato atual
-    ticker_atual, ano_contrato = obter_ticker_carbono_atual()
+    col1, col2 = st.sidebar.columns([3, 1])
+    with col1:
+        if st.button("🔄 Atualizar Cotações", key="atualizar_cotacoes"):
+            st.session_state.cotacao_atualizada = True
+            st.session_state.mostrar_atualizacao = True
     
     # Mostrar mensagem de atualização se necessário
     if st.session_state.get('mostrar_atualizacao', False):
         st.sidebar.info("🔄 Atualizando cotações...")
-        st.session_state.mostrar_atualizacao = False
-    
-    if st.session_state.get('cotacao_atualizada', False):
+        
         # Obter cotação do carbono
-        preco_carbono, moeda, contrato_info, sucesso_carbono = obter_cotacao_carbono()
+        preco_carbono, moeda, contrato_info, sucesso_carbono, fonte_carbono = obter_cotacao_carbono()
         
         # Obter cotação do Euro
-        preco_euro, moeda_real, sucesso_euro = obter_cotacao_euro_real()
-        
-        # Mostrar resultados
-        if sucesso_carbono:
-            st.sidebar.success(f"**{contrato_info}**")
-        else:
-            st.sidebar.info(f"**{contrato_info}**")
-        
-        if sucesso_euro:
-            st.sidebar.success(f"**EUR/BRL Atualizado**")
-        else:
-            st.sidebar.info(f"**EUR/BRL Referência**")
+        preco_euro, moeda_real, sucesso_euro, fonte_euro = obter_cotacao_euro_real()
         
         # Atualizar session state
         st.session_state.preco_carbono = preco_carbono
         st.session_state.moeda_carbono = moeda
         st.session_state.taxa_cambio = preco_euro
         st.session_state.moeda_real = moeda_real
-        st.session_state.ano_contrato = ano_contrato
+        st.session_state.fonte_cotacao = fonte_carbono
         
-        # Resetar flag
+        # Resetar flags
+        st.session_state.mostrar_atualizacao = False
         st.session_state.cotacao_atualizada = False
-    else:
-        # Atualizar o ano_contrato se necessário (para caso o ano tenha mudado)
-        ticker_atual, ano_contrato_atual = obter_ticker_carbono_atual()
-        if st.session_state.ano_contrato != ano_contrato_atual:
-            st.session_state.ano_contrato = ano_contrato_atual
+        
+        st.rerun()
 
     # Exibe cotação atual do carbono
     st.sidebar.metric(
-        label=f"Carbon Dec {st.session_state.ano_contrato} (tCO₂eq)",
+        label=f"Preço do Carbono (tCO₂eq)",
         value=f"{st.session_state.moeda_carbono} {st.session_state.preco_carbono:.2f}",
-        help=f"Contrato futuro com vencimento Dezembro {st.session_state.ano_contrato}"
+        help=f"Fonte: {st.session_state.fonte_cotacao}"
     )
     
     # Exibe cotação atual do Euro
@@ -242,35 +213,72 @@ def exibir_cotacao_carbono():
     preco_carbono_reais = st.session_state.preco_carbono * st.session_state.taxa_cambio
     
     st.sidebar.metric(
-        label=f"Carbon Dec {st.session_state.ano_contrato} (R$/tCO₂eq)",
+        label=f"Carbono em Reais (tCO₂eq)",
         value=f"R$ {preco_carbono_reais:.2f}",
         help="Preço do carbono convertido para Reais Brasileiros"
     )
     
     # Informações adicionais
-    with st.sidebar.expander("📅 Sobre os Vencimentos e Câmbio"):
+    with st.sidebar.expander("ℹ️ Informações do Mercado de Carbono"):
         st.markdown(f"""
-        **Contrato Atual:** Dec {st.session_state.ano_contrato}
-        **Ticker:** `{ticker_atual}`
+        **📊 Cotações Atuais:**
+        - **Fonte do Carbono:** {st.session_state.fonte_cotacao}
+        - **Preço Atual:** {st.session_state.moeda_carbono} {st.session_state.preco_carbono:.2f}/tCO₂eq
+        - **Câmbio EUR/BRL:** 1 Euro = R$ {st.session_state.taxa_cambio:.2f}
+        - **Carbono em Reais:** R$ {preco_carbono_reais:.2f}/tCO₂eq
         
-        **Câmbio Atual:**
-        - 1 Euro = R$ {st.session_state.taxa_cambio:.2f}
-        - Carbon em Reais: R$ {preco_carbono_reais:.2f}/tCO₂eq
+        **🌍 Mercado de Referência:**
+        - European Union Allowances (EUA)
+        - European Emissions Trading System (EU ETS)
+        - Contratos futuros de carbono
+        - Preços em tempo real
         
-        **Ciclo dos Contratos:**
-        - Dez 2024 → CO2Z24.NYB
-        - Dez 2025 → CO2Z25.NYB  
-        - Dez 2026 → CO2Z26.NYB
-        - Dez 2027 → CO2Z27.NYB
+        **🔄 Atualização:**
+        - As cotações são carregadas automaticamente ao abrir o aplicativo
+        - Clique em **"Atualizar Cotações"** para obter valores mais recentes
+        - Em caso de falha na conexão, são utilizados valores de referência atualizados
         
-        **Migração Automática:**
-        - A partir de Setembro: prepara para próximo ano
-        - O app ajusta automaticamente
-        - Sem necessidade de atualização manual
+        **💡 Importante:**
+        - Os preços são baseados no mercado regulado da UE
+        - Valores em tempo real sujeitos a variações de mercado
+        - Conversão para Real utilizando câmbio comercial
         """)
 
 # =============================================================================
-# FUNÇÕES ORIGINAIS DO SEU SCRIPT
+# INICIALIZAÇÃO DA SESSION STATE
+# =============================================================================
+
+# Inicializar todas as variáveis de session state necessárias
+def inicializar_session_state():
+    if 'preco_carbono' not in st.session_state:
+        # Buscar cotação automaticamente na inicialização
+        preco_carbono, moeda, contrato_info, sucesso, fonte = obter_cotacao_carbono()
+        st.session_state.preco_carbono = preco_carbono
+        st.session_state.moeda_carbono = moeda
+        st.session_state.fonte_cotacao = fonte
+        
+    if 'taxa_cambio' not in st.session_state:
+        # Buscar cotação do Euro automaticamente
+        preco_euro, moeda_real, sucesso_euro, fonte_euro = obter_cotacao_euro_real()
+        st.session_state.taxa_cambio = preco_euro
+        st.session_state.moeda_real = moeda_real
+        
+    if 'moeda_real' not in st.session_state:
+        st.session_state.moeda_real = "R$"
+    if 'cotacao_atualizada' not in st.session_state:
+        st.session_state.cotacao_atualizada = False
+    if 'run_simulation' not in st.session_state:
+        st.session_state.run_simulation = False
+    if 'mostrar_atualizacao' not in st.session_state:
+        st.session_state.mostrar_atualizacao = False
+    if 'cotacao_carregada' not in st.session_state:
+        st.session_state.cotacao_carregada = False
+
+# Chamar a inicialização
+inicializar_session_state()
+
+# =============================================================================
+# FUNÇÕES ORIGINAIS DO V4
 # =============================================================================
 
 # Função para formatar números no padrão brasileiro
@@ -312,61 +320,75 @@ def br_format_5_dec(x, pos):
     """
     return f"{x:,.5f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
+# Título do aplicativo
+st.title("Simulador de Emissões de tCO₂eq")
+st.markdown("""
+Esta ferramenta projeta os Créditos de Carbono ao calcular as emissões de gases de efeito estufa para dois contextos de gestão de resíduos
+""")
+
 # =============================================================================
-# SIDEBAR COM PARÂMETROS
+# SIDEBAR COM PARÂMETROS (DO V4)
 # =============================================================================
 
-# Seção de cotação do carbono
+# Seção de cotação do carbono - AGORA ATUALIZADA AUTOMATICAMENTE
 exibir_cotacao_carbono()
 
 # Seção original de parâmetros
 with st.sidebar:
-    st.header("Parâmetros de Entrada")
+    st.header("⚙️ Parâmetros de Entrada")
     
     # Entrada principal de resíduos
     residuos_kg_dia = st.slider("Quantidade de resíduos (kg/dia)", 
-                               min_value=10, max_value=1000, value=100, step=10)
+                               min_value=10, max_value=1000, value=100, step=10,
+                               help="Quantidade diária de resíduos orgânicos gerados")
     
-    st.subheader("Parâmetros Operacionais")
+    st.subheader("📊 Parâmetros Operacionais")
     
     # Umidade com formatação brasileira (0,85 em vez de 0.85)
-    umidade_valor = st.slider("Umidade do resíduo", 50, 95, 85, 1)
+    umidade_valor = st.slider("Umidade do resíduo (%)", 50, 95, 85, 1,
+                             help="Percentual de umidade dos resíduos orgânicos")
     umidade = umidade_valor / 100.0
-    st.write(f"Umidade selecionada: {formatar_br(umidade_valor)}%")
+    st.write(f"**Umidade selecionada:** {formatar_br(umidade_valor)}%")
     
     # Temperatura como parâmetro variável - AJUSTADO: agora vai até 45°C
-    temperatura_valor = st.slider("Temperatura média anual (°C)", 15, 45, 25, 1)
-    st.write(f"Temperatura selecionada: {formatar_br(temperatura_valor)} °C")
+    temperatura_valor = st.slider("Temperatura média anual (°C)", 15, 45, 25, 1,
+                                 help="Temperatura ambiente média para os cálculos")
+    st.write(f"**Temperatura selecionada:** {formatar_br(temperatura_valor)} °C")
     
     # DOC como parâmetro variável
-    doc_valor = st.slider("DOC (Carbono Orgânico Degradável)", 0.10, 0.50, 0.15, 0.01)
-    st.write(f"DOC selecionado: {formatar_br(doc_valor)}")
+    doc_valor = st.slider("DOC (Carbono Orgânico Degradável)", 0.10, 0.50, 0.15, 0.01,
+                         help="Fraçãp de carbono orgânico degradável nos resíduos")
+    st.write(f"**DOC selecionado:** {formatar_br(doc_valor)}")
     
     # MCF como parâmetro variável
-    mcf_valor = st.slider("MCF (Methane Correction Factor)", 0.1, 1.0, 1.0, 0.1)
-    st.write(f"MCF selecionado: {formatar_br(mcf_valor)}")
+    mcf_valor = st.slider("MCF (Methane Correction Factor)", 0.1, 1.0, 1.0, 0.1,
+                         help="Fator de correção de metano para condições específicas")
+    st.write(f"**MCF selecionado:** {formatar_br(mcf_valor)}")
     
     # Constante de decaimento como parâmetro variável
-    k_valor = st.slider("k (Constante de decaimento anual)", 0.01, 0.20, 0.06, 0.01)
-    st.write(f"Constante k selecionada: {formatar_br(k_valor)} ano⁻¹")
+    k_valor = st.slider("k (Constante de decaimento anual)", 0.01, 0.20, 0.06, 0.01,
+                       help="Taxa de decaimento para cálculo das emissões")
+    st.write(f"**Constante k selecionada:** {formatar_br(k_valor)} ano⁻¹")
     
-    massa_exposta_kg = st.slider("Massa exposta na frente de trabalho (kg)", 50, 200, 100, 10)
-    h_exposta = st.slider("Horas expostas por dia", 4, 24, 8, 1)
+    massa_exposta_kg = st.slider("Massa exposta na frente de trabalho (kg)", 50, 200, 100, 10,
+                                help="Massa de resíduos exposta diariamente para tratamento")
+    h_exposta = st.slider("Horas expostas por dia", 4, 24, 8, 1,
+                         help="Horas diárias de exposição dos resíduos")
     
-    st.subheader("Configuração de Simulação")
-    anos_simulacao = st.slider("Anos de simulação", 5, 50, 20, 5)
-    n_simulations = st.slider("Número de simulações Monte Carlo", 50, 1000, 100, 50)
-    n_samples = st.slider("Número de amostras Sobol", 32, 256, 64, 16)
+    st.subheader("🎯 Configuração de Simulação")
+    anos_simulacao = st.slider("Anos de simulação", 5, 50, 20, 5,
+                              help="Período total da simulação em anos")
+    n_simulations = st.slider("Número de simulações Monte Carlo", 50, 1000, 100, 50,
+                             help="Número de iterações para análise de incerteza")
+    n_samples = st.slider("Número de amostras Sobol", 32, 256, 64, 16,
+                         help="Número de amostras para análise de sensibilidade")
     
-    if st.button("Executar Simulação"):
+    if st.button("🚀 Executar Simulação", type="primary"):
         st.session_state.run_simulation = True
 
 # =============================================================================
-# PARÂMETROS FIXOS (DO CÓDIGO ORIGINAL)
+# PARÂMETROS FIXOS (DO V4)
 # =============================================================================
-
-# NOTA: Os valores padrão agora são definidos pelos sliders acima
-# temperatura_valor, doc_valor, mcf_valor, k_valor são obtidos dos sliders
 
 # Parâmetros fixos que não variam
 F = 0.5  # Fração de metano no biogás
@@ -470,7 +492,7 @@ PERFIL_N2O_THERMO = np.array([
 PERFIL_N2O_THERMO /= PERFIL_N2O_THERMO.sum()
 
 # =============================================================================
-# FUNÇÕES DE CÁLCULO (ADAPTADAS DO SCRIPT ANEXO)
+# FUNÇÕES DE CÁLCULO (DO V4)
 # =============================================================================
 
 def calcular_docf(temperatura):
@@ -511,43 +533,6 @@ def calcular_emissoes_pre_descarte(O2_concentracao, dias_simulacao=dias):
 
     return emissoes_CH4_pre_descarte_kg, emissoes_N2O_pre_descarte_kg
 
-def calcular_emissoes_aterro(params, dias_simulacao=dias):
-    umidade_val, temp_val, doc_val = params
-
-    fator_umid = (1 - umidade_val) / (1 - 0.55)
-    f_aberto = np.clip((massa_exposta_kg / residuos_kg_dia) * (h_exposta / 24), 0.0, 1.0)
-    
-    # Calcular DOCf dinamicamente baseado na temperatura
-    docf_calc = calcular_docf(temp_val)
-
-    # USANDO VALORES DOS SLIDERS: mcf_valor, k_valor
-    potencial_CH4_por_kg = doc_val * docf_calc * mcf_valor * F * (16/12) * (1 - Ri) * (1 - OX)
-    potencial_CH4_lote_diario = residuos_kg_dia * potencial_CH4_por_kg
-
-    t = np.arange(1, dias_simulacao + 1, dtype=float)
-    kernel_ch4 = np.exp(-k_valor * (t - 1) / 365.0) - np.exp(-k_valor * t / 365.0)
-    entradas_diarias = np.ones(dias_simulacao, dtype=float)
-    emissoes_CH4 = fftconvolve(entradas_diarias, kernel_ch4, mode='full')[:dias_simulacao]
-    emissoes_CH4 *= potencial_CH4_lote_diario
-
-    E_aberto = 1.91
-    E_fechado = 2.15
-    E_medio = f_aberto * E_aberto + (1 - f_aberto) * E_fechado
-    E_medio_ajust = E_medio * fator_umid
-    emissao_diaria_N2O = (E_medio_ajust * (44/28) / 1_000_000) * residuos_kg_dia
-
-    kernel_n2o = np.array([PERFIL_N2O.get(d, 0) for d in range(1, 6)], dtype=float)
-    emissoes_N2O = fftconvolve(np.full(dias_simulacao, emissao_diaria_N2O), kernel_n2o, mode='full')[:dias_simulacao]
-
-    O2_concentracao = 21
-    emissoes_CH4_pre_descarte_kg, emissoes_N2O_pre_descarte_kg = calcular_emissoes_pre_descarte(O2_concentracao, dias_simulacao)
-
-    total_ch4_aterro_kg = emissoes_CH4 + emissoes_CH4_pre_descarte_kg
-    total_n2o_aterro_kg = emissoes_N2O + emissoes_N2O_pre_descarte_kg
-
-    return total_ch4_aterro_kg, total_n2o_aterro_kg
-
-# Função auxiliar para calcular emissões de aterro com parâmetros específicos
 def calcular_emissoes_aterro_com_params(params, mcf_param, k_param, dias_simulacao=dias):
     umidade_val, temp_val, doc_val = params
 
@@ -624,18 +609,6 @@ def calcular_emissoes_compostagem(params, dias_simulacao=dias, dias_compostagem=
 
     return emissoes_CH4, emissoes_N2O
 
-def executar_simulacao_completa(parametros):
-    umidade, T, DOC = parametros
-    
-    ch4_aterro, n2o_aterro = calcular_emissoes_aterro([umidade, T, DOC])
-    ch4_vermi, n2o_vermi = calcular_emissoes_vermi([umidade, T, DOC])
-
-    total_aterro_tco2eq = (ch4_aterro * GWP_CH4_20 + n2o_aterro * GWP_N2O_20) / 1000
-    total_vermi_tco2eq = (ch4_vermi * GWP_CH4_20 + n2o_vermi * GWP_N2O_20) / 1000
-
-    reducao_tco2eq = total_aterro_tco2eq.sum() - total_vermi_tco2eq.sum()
-    return reducao_tco2eq
-
 # Modificar a função executar_simulacao_completa para aceitar 5 parâmetros
 def executar_simulacao_completa_5_params(parametros):
     umidade, T, DOC, MCF, k = parametros
@@ -651,18 +624,6 @@ def executar_simulacao_completa_5_params(parametros):
     total_vermi_tco2eq = (ch4_vermi * GWP_CH4_20 + n2o_vermi * GWP_N2O_20) / 1000
 
     reducao_tco2eq = total_aterro_tco2eq.sum() - total_vermi_tco2eq.sum()
-    return reducao_tco2eq
-
-def executar_simulacao_unfccc(parametros):
-    umidade, T, DOC = parametros
-
-    ch4_aterro, n2o_aterro = calcular_emissoes_aterro([umidade, T, DOC])
-    total_aterro_tco2eq = (ch4_aterro * GWP_CH4_20 + n2o_aterro * GWP_N2O_20) / 1000
-
-    ch4_compost, n2o_compost = calcular_emissoes_compostagem([umidade, T, DOC], dias_simulacao=dias, dias_compostagem=50)
-    total_compost_tco2eq = (ch4_compost * GWP_CH4_20 + n2o_compost * GWP_N2O_20) / 1000
-
-    reducao_tco2eq = total_aterro_tco2eq.sum() - total_compost_tco2eq.sum()
     return reducao_tco2eq
 
 # Modificar a função executar_simulacao_unfccc para aceitar 5 parâmetros
@@ -682,7 +643,7 @@ def executar_simulacao_unfccc_5_params(parametros):
     return reducao_tco2eq
 
 # =============================================================================
-# EXECUÇÃO DA SIMULAÇÃO
+# EXECUÇÃO DA SIMULAÇÃO (DO V4 COM COTAÇÃO DO V2)
 # =============================================================================
 
 # Executar simulação quando solicitado
@@ -691,7 +652,7 @@ if st.session_state.get('run_simulation', False):
         # Executar modelo base
         params_base = [umidade, temperatura_valor, doc_valor]
 
-        ch4_aterro_dia, n2o_aterro_dia = calcular_emissoes_aterro(params_base)
+        ch4_aterro_dia, n2o_aterro_dia = calcular_emissoes_aterro_com_params(params_base, mcf_valor, k_valor)
         ch4_vermi_dia, n2o_vermi_dia = calcular_emissoes_vermi(params_base)
 
         # Construir DataFrame
@@ -759,7 +720,7 @@ if st.session_state.get('run_simulation', False):
         # =============================================================================
 
         # Exibir resultados
-        st.header("Resultados da Simulação")
+        st.header("📈 Resultados da Simulação")
         
         # Obter valores totais
         total_evitado_tese = df['Reducao_tCO2eq_acum'].iloc[-1]
@@ -769,7 +730,7 @@ if st.session_state.get('run_simulation', False):
         preco_carbono = st.session_state.preco_carbono
         moeda = st.session_state.moeda_carbono
         taxa_cambio = st.session_state.taxa_cambio
-        ano_contrato = st.session_state.ano_contrato  # Usa o ano armazenado
+        fonte_cotacao = st.session_state.fonte_cotacao
         
         # Calcular valores financeiros em Euros
         valor_tese_eur = calcular_valor_creditos(total_evitado_tese, preco_carbono, moeda)
@@ -782,16 +743,13 @@ if st.session_state.get('run_simulation', False):
         # NOVA SEÇÃO: VALOR FINANCEIRO DAS EMISSÕES EVITADAS
         st.subheader("💰 Valor Financeiro das Emissões Evitadas")
         
-        if not YFINANCE_AVAILABLE:
-            st.warning("⚠️ **Cotações em modo offline** - Instale yfinance para valores em tempo real")
-        
         # Primeira linha: Euros
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric(
-                f"Preço Carbon Dec {ano_contrato} (Euro)", 
+                f"Preço Carbono (Euro)", 
                 f"{moeda} {preco_carbono:.2f}/tCO₂eq",
-                help=f"Cotação do contrato futuro para Dezembro {ano_contrato}"
+                help=f"Fonte: {fonte_cotacao}"
             )
         with col2:
             st.metric(
@@ -810,7 +768,7 @@ if st.session_state.get('run_simulation', False):
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric(
-                f"Preço Carbon Dec {ano_contrato} (R$)", 
+                f"Preço Carbono (R$)", 
                 f"R$ {formatar_br(preco_carbono * taxa_cambio)}/tCO₂eq",
                 help="Preço do carbono convertido para Reais"
             )
@@ -830,37 +788,91 @@ if st.session_state.get('run_simulation', False):
         # Explicação sobre compra e venda
         with st.expander("💡 Como funciona a comercialização no mercado de carbono?"):
             st.markdown(f"""
-            **Para o Carbon Dec {ano_contrato}:**
+            **📊 Informações de Mercado:**
             - **Preço em Euro:** {moeda} {preco_carbono:.2f}/tCO₂eq
             - **Preço em Real:** R$ {formatar_br(preco_carbono * taxa_cambio)}/tCO₂eq
             - **Taxa de câmbio:** 1 Euro = R$ {taxa_cambio:.2f}
+            - **Fonte:** {fonte_cotacao}
             
-            **📈 Comprar créditos (compensação):**
+            **💶 Comprar créditos (compensação):**
             - Custo em Euro: **{moeda} {formatar_br(valor_tese_eur)}**
             - Custo em Real: **R$ {formatar_br(valor_tese_brl)}**
             
-            **📉 Vender créditos (comercialização):**  
+            **💵 Vender créditos (comercialização):**  
             - Receita em Euro: **{moeda} {formatar_br(valor_tese_eur)}**
             - Receita em Real: **R$ {formatar_br(valor_tese_brl)}**
             
-            **Contrato Carbon Dec {ano_contrato}:**
-            - Cada contrato = 1.000 tCO₂eq
-            - Vencimento: Dezembro {ano_contrato}
-            - Mercado: ICE Exchange
-            - Moeda original: Euros (€)
-            - Ticker no Yahoo Finance: `CO2Z{str(ano_contrato)[-2:]}.NYB`
+            **🌍 Mercado de Referência:**
+            - European Union Allowances (EUA)
+            - European Emissions Trading System (EU ETS)
+            - Contratos futuros de carbono
+            - Preços em tempo real do mercado regulado
             """)
         
-        # Métricas originais de emissões
+        # =============================================================================
+        # SEÇÃO ATUALIZADA: RESUMO DAS EMISSÕES EVITADAS COM MÉTRICAS ANUAIS REORGANIZADAS
+        # =============================================================================
+        
+        # Métricas de emissões evitadas - layout reorganizado
         st.subheader("📊 Resumo das Emissões Evitadas")
+        
+        # Calcular médias anuais
+        media_anual_tese = total_evitado_tese / anos_simulacao
+        media_anual_unfccc = total_evitado_unfccc / anos_simulacao
+        
+        # Layout com duas colunas principais
         col1, col2 = st.columns(2)
+
         with col1:
-            st.metric("Total de emissões evitadas (Tese)", f"{formatar_br(total_evitado_tese)} tCO₂eq")
+            st.markdown("#### 📋 Metodologia da Tese")
+            st.metric(
+                "Total de emissões evitadas", 
+                f"{formatar_br(total_evitado_tese)} tCO₂eq",
+                help=f"Total acumulado em {anos_simulacao} anos"
+            )
+            st.metric(
+                "Média anual", 
+                f"{formatar_br(media_anual_tese)} tCO₂eq/ano",
+                help=f"Emissões evitadas por ano em média"
+            )
+
         with col2:
-            st.metric("Total de emissões evitadas (UNFCCC)", f"{formatar_br(total_evitado_unfccc)} tCO₂eq")
+            st.markdown("#### 📋 Metodologia UNFCCC")
+            st.metric(
+                "Total de emissões evitadas", 
+                f"{formatar_br(total_evitado_unfccc)} tCO₂eq",
+                help=f"Total acumulado em {anos_simulacao} anos"
+            )
+            st.metric(
+                "Média anual", 
+                f"{formatar_br(media_anual_unfccc)} tCO₂eq/ano",
+                help=f"Emissões evitadas por ano em média"
+            )
+
+        # Adicionar explicação sobre as métricas anuais
+        with st.expander("💡 Entenda as métricas anuais"):
+            st.markdown(f"""
+            **📊 Como interpretar as métricas anuais:**
+            
+            **Metodologia da Tese:**
+            - **Total em {anos_simulacao} anos:** {formatar_br(total_evitado_tese)} tCO₂eq
+            - **Média anual:** {formatar_br(media_anual_tese)} tCO₂eq/ano
+            - Equivale a aproximadamente **{formatar_br(media_anual_tese / 365)} tCO₂eq/dia**
+            
+            **Metodologia UNFCCC:**
+            - **Total em {anos_simulacao} anos:** {formatar_br(total_evitado_unfccc)} tCO₂eq
+            - **Média anual:** {formatar_br(media_anual_unfccc)} tCO₂eq/ano
+            - Equivale a aproximadamente **{formatar_br(media_anual_unfccc / 365)} tCO₂eq/dia**
+            
+            **💡 Significado prático:**
+            - As métricas anuais ajudam a planejar projetos de longo prazo
+            - Permitem comparar com metas anuais de redução de emissões
+            - Facilitam o cálculo de retorno financeiro anual
+            - A média anual representa o desempenho constante do projeto
+            """)
 
         # Gráfico comparativo
-        st.subheader("Comparação Anual das Emissões Evitadas")
+        st.subheader("📊 Comparação Anual das Emissões Evitadas")
         df_evitadas_anual = pd.DataFrame({
             'Year': df_anual_revisado['Year'],
             'Proposta da Tese': df_anual_revisado['Emission reductions (t CO₂eq)'],
@@ -899,7 +911,7 @@ if st.session_state.get('run_simulation', False):
         st.pyplot(fig)
 
         # Gráfico de redução acumulada
-        st.subheader("Redução de Emissões Acumulada")
+        st.subheader("📉 Redução de Emissões Acumulada")
         fig, ax = plt.subplots(figsize=(10, 6))
         ax.plot(df['Data'], df['Total_Aterro_tCO2eq_acum'], 'r-', label='Cenário Base (Aterro Sanitário)', linewidth=2)
         ax.plot(df['Data'], df['Total_Vermi_tCO2eq_acum'], 'g-', label='Projeto (Compostagem em reatores com minhocas)', linewidth=2)
@@ -915,7 +927,7 @@ if st.session_state.get('run_simulation', False):
         st.pyplot(fig)
 
         # Análise de Sensibilidade Global (Sobol) - PROPOSTA DA TESE
-        st.subheader("Análise de Sensibilidade Global (Sobol) - Proposta da Tese")
+        st.subheader("🎯 Análise de Sensibilidade Global (Sobol) - Proposta da Tese")
         br_formatter_sobol = FuncFormatter(br_format)
 
         np.random.seed(50)  
@@ -952,7 +964,7 @@ if st.session_state.get('run_simulation', False):
         st.pyplot(fig)
 
         # Análise de Sensibilidade Global (Sobol) - CENÁRIO UNFCCC
-        st.subheader("Análise de Sensibilidade Global (Sobol) - Cenário UNFCCC")
+        st.subheader("🎯 Análise de Sensibilidade Global (Sobol) - Cenário UNFCCC")
 
         np.random.seed(50)
         
@@ -988,7 +1000,7 @@ if st.session_state.get('run_simulation', False):
         st.pyplot(fig)
 
         # Análise de Incerteza (Monte Carlo) - PROPOSTA DA TESE
-        st.subheader("Análise de Incerteza (Monte Carlo) - Proposta da Tese")
+        st.subheader("🎲 Análise de Incerteza (Monte Carlo) - Proposta da Tese")
 
         def gerar_parametros_mc_tese(n):
             np.random.seed(50)
@@ -1025,7 +1037,7 @@ if st.session_state.get('run_simulation', False):
         st.pyplot(fig)
 
         # Análise de Incerteza (Monte Carlo) - CENÁRIO UNFCCC
-        st.subheader("Análise de Incerteza (Monte Carlo) - Cenário UNFCCC")
+        st.subheader("🎲 Análise de Incerteza (Monte Carlo) - Cenário UNFCCC")
         
         def gerar_parametros_mc_unfccc(n):
             np.random.seed(50)
@@ -1062,7 +1074,7 @@ if st.session_state.get('run_simulation', False):
         st.pyplot(fig)
 
         # Análise Estatística de Comparação
-        st.subheader("Análise Estatística de Comparação")
+        st.subheader("📊 Análise Estatística de Comparação")
         
         # Teste de normalidade para as diferenças
         diferencas = results_array_tese - results_array_unfccc
@@ -1078,7 +1090,7 @@ if st.session_state.get('run_simulation', False):
         st.write(f"Teste de Wilcoxon (pareado): Estatística = **{wilcoxon_stat:.5f}**, P-valor = **{p_wilcoxon:.5f}**")
 
         # Tabela de resultados anuais - Proposta da Tese
-        st.subheader("Resultados Anuais - Proposta da Tese")
+        st.subheader("📋 Resultados Anuais - Proposta da Tese")
 
         # Criar uma cópia para formatação
         df_anual_formatado = df_anual_revisado.copy()
@@ -1089,7 +1101,7 @@ if st.session_state.get('run_simulation', False):
         st.dataframe(df_anual_formatado)
 
         # Tabela de resultados anuais - Metodologia UNFCCC
-        st.subheader("Resultados Anuais - Metodologia UNFCCC")
+        st.subheader("📋 Resultados Anuais - Metodologia UNFCCC")
 
         # Criar uma cópia para formatação
         df_comp_formatado = df_comp_anual_revisado.copy()
@@ -1100,12 +1112,12 @@ if st.session_state.get('run_simulation', False):
         st.dataframe(df_comp_formatado)
 
 else:
-    st.info("Ajuste os parâmetros na barra lateral e clique em 'Executar Simulação' para ver os resultados.")
+    st.info("💡 Ajuste os parâmetros na barra lateral e clique em 'Executar Simulação' para ver os resultados.")
 
-# Rodapé - ATUALIZADO conforme solicitado
+# Rodapé
 st.markdown("---")
 st.markdown("""
-**Referências por Cenário:**
+**📚 Referências por Cenário:**
 
 **Cenário de Baseline (Aterro Sanitário):**
 - Metano: IPCC (2006), UNFCCC (2016) e Wang et al. (2023) 
