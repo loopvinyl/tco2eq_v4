@@ -930,7 +930,7 @@ if st.session_state.get('run_simulation', False):
         st.subheader("🎯 Análise de Sensibilidade Global (Sobol) - Proposta da Tese")
         br_formatter_sobol = FuncFormatter(br_format)
 
-        np.random.seed(50)  
+        np.random.seed(55)  
         
         problem_tese = {
             'num_vars': 5,  # Agora com 5 variáveis
