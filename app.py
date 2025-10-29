@@ -14,7 +14,7 @@ from matplotlib.ticker import FuncFormatter
 from SALib.sample.sobol import sample
 from SALib.analyze.sobol import analyze
 
-np.random.seed(50)  # Garante reprodutibilidade
+np.random.seed(55)  # Garante reprodutibilidade
 
 # Configurações iniciais
 st.set_page_config(page_title="Simulador de Emissões CO₂eq", layout="wide")
@@ -966,7 +966,7 @@ if st.session_state.get('run_simulation', False):
         # Análise de Sensibilidade Global (Sobol) - CENÁRIO UNFCCC
         st.subheader("🎯 Análise de Sensibilidade Global (Sobol) - Cenário UNFCCC")
 
-        np.random.seed(50)
+        np.random.seed(55)
         
         problem_unfccc = {
             'num_vars': 5,  # Agora com 5 variáveis
@@ -1003,7 +1003,7 @@ if st.session_state.get('run_simulation', False):
         st.subheader("🎲 Análise de Incerteza (Monte Carlo) - Proposta da Tese")
 
         def gerar_parametros_mc_tese(n):
-            np.random.seed(50)
+            np.random.seed(55)
             umidade_vals = np.random.uniform(0.75, 0.90, n)
             temp_vals = np.random.normal(25, 5, n)  # Ajustado para permitir temperaturas mais altas
             doc_vals = np.random.triangular(0.12, 0.15, 0.18, n)
@@ -1040,7 +1040,7 @@ if st.session_state.get('run_simulation', False):
         st.subheader("🎲 Análise de Incerteza (Monte Carlo) - Cenário UNFCCC")
         
         def gerar_parametros_mc_unfccc(n):
-            np.random.seed(50)
+            np.random.seed(55)
             umidade_vals = np.random.uniform(0.75, 0.90, n)
             temp_vals = np.random.normal(25, 5, n)  # Ajustado para permitir temperaturas mais altas
             doc_vals = np.random.triangular(0.12, 0.15, 0.18, n)
