@@ -2,7 +2,7 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from datetime import datetime, timedelta
+from datetime import datetime
 import seaborn as sns
 from scipy import stats
 from scipy.signal import fftconvolve
@@ -51,10 +51,15 @@ def inicializar_session_state():
         st.session_state.run_simulation = False
     if 'mostrar_atualizacao' not in st.session_state:
         st.session_state.mostrar_atualizacao = False
+    
+    # Inicializar ano_contrato com o ano atual
     if 'ano_contrato' not in st.session_state:
-        st.session_state.ano_contrato = 2025  # Inicia com CarbonDec25
-    if 'contrato_atual' not in st.session_state:
-        st.session_state.contrato_atual = "CarbonDec25"
+        ano_atual = datetime.now().year
+        mes_atual = datetime.now().month
+        if mes_atual >= 9:
+            st.session_state.ano_contrato = ano_atual + 1
+        else:
+            st.session_state.ano_contrato = ano_atual
 
 # Chamar a inicialização
 inicializar_session_state()
@@ -72,45 +77,33 @@ Esta ferramenta projeta os Créditos de Carbono ao calcular as emissões de gase
 def obter_ticker_carbono_atual():
     """
     Determina automaticamente o ticker do contrato futuro de carbono mais relevante
-    Começa com CarbonDec25 e migra automaticamente após o vencimento
     """
-    hoje = datetime.now()
-    ano_atual = hoje.year
-    mes_atual = hoje.month
+    ano_atual = datetime.now().year
+    mes_atual = datetime.now().month
     
-    # VERIFICAR SE O CONTRATO CarbonDec25 JÁ VENCEU
-    # O contrato CarbonDec25 vence em dezembro de 2025
-    vencimento_carbondec25 = datetime(2025, 12, 15)  # Data aproximada de vencimento
-    
-    if hoje > vencimento_carbondec25:
-        # CarbonDec25 já venceu, usar próximo contrato
-        if mes_atual >= 9:
-            ano_contrato = ano_atual + 1
-        else:
-            ano_contrato = ano_atual
-        contrato_nome = f"CarbonDec{ano_contrato}"
+    # Lógica: a partir de setembro, começa a migrar para o próximo ano
+    if mes_atual >= 9:
+        ano_contrato = ano_atual + 1
     else:
-        # CarbonDec25 ainda está válido
-        ano_contrato = 2025
-        contrato_nome = "CarbonDec25"
+        ano_contrato = ano_atual
     
     # Formata o ano para 2 dígitos (25, 26, etc.)
     ano_2_digitos = str(ano_contrato)[-2:]
     
     ticker = f'CO2Z{ano_2_digitos}.NYB'
-    return ticker, ano_contrato, contrato_nome
+    return ticker, ano_contrato
 
 def obter_cotacao_carbono():
     """
     Obtém a cotação em tempo real do contrato futuro de carbono atual
     """
     if not YFINANCE_AVAILABLE:
-        ticker_atual, ano_contrato, contrato_nome = obter_ticker_carbono_atual()
-        return 85.50, "€", f"EUA {contrato_nome} (yfinance não disponível)", False
+        ticker_atual, ano_contrato = obter_ticker_carbono_atual()
+        return 85.50, "€", f"EUA Carbon Dec {ano_contrato} (yfinance não disponível)", False
     
     try:
         # Obtém o ticker atual automaticamente
-        ticker_atual, ano_contrato, contrato_nome = obter_ticker_carbono_atual()
+        ticker_atual, ano_contrato = obter_ticker_carbono_atual()
         ano_2_digitos = str(ano_contrato)[-2:]
         
         simbolos_tentativas = [
@@ -137,13 +130,13 @@ def obter_cotacao_carbono():
         
         if cotacao is None:
             # Fallback para dados de exemplo
-            return 85.50, "€", f"EUA {contrato_nome} (Referência)", False
+            return 85.50, "€", f"EUA Carbon Dec {ano_contrato} (Referência)", False
         
-        return cotacao, "€", f"EUA {contrato_nome}", True
+        return cotacao, "€", f"EUA Carbon Futures Dec {ano_contrato}", True
         
     except Exception as e:
-        ticker_atual, ano_contrato, contrato_nome = obter_ticker_carbono_atual()
-        return 85.50, "€", f"EUA {contrato_nome} (Erro)", False
+        ticker_atual, ano_contrato = obter_ticker_carbono_atual()
+        return 85.50, "€", f"EUA Carbon Dec {ano_contrato} (Erro)", False
 
 def obter_cotacao_euro_real():
     """
@@ -174,19 +167,6 @@ def calcular_valor_creditos(emissoes_evitadas_tco2eq, preco_carbono_por_tonelada
     valor_total = emissoes_evitadas_tco2eq * preco_carbono_por_tonelada * taxa_cambio
     return valor_total
 
-def verificar_migracao_contrato():
-    """
-    Verifica se precisa migrar para um novo contrato e atualiza o session state
-    """
-    ticker_atual, ano_contrato, contrato_nome = obter_ticker_carbono_atual()
-    
-    # Verificar se houve mudança no contrato
-    if st.session_state.ano_contrato != ano_contrato or st.session_state.contrato_atual != contrato_nome:
-        st.session_state.ano_contrato = ano_contrato
-        st.session_state.contrato_atual = contrato_nome
-        return True
-    return False
-
 def exibir_cotacao_carbono():
     """
     Exibe a cotação do carbono com informações sobre o contrato atual
@@ -198,17 +178,13 @@ def exibir_cotacao_carbono():
         st.sidebar.info("Para cotações em tempo real, execute:")
         st.sidebar.code("pip install yfinance")
     
-    # Verificar migração automática de contrato
-    if verificar_migracao_contrato():
-        st.sidebar.info(f"🔄 Migração automática: {st.session_state.contrato_atual}")
-    
     # Botão para atualizar cotações
     if st.sidebar.button("🔄 Atualizar Cotações"):
         st.session_state.cotacao_atualizada = True
         st.session_state.mostrar_atualizacao = True
 
     # Obtém informações do contrato atual
-    ticker_atual, ano_contrato, contrato_nome = obter_ticker_carbono_atual()
+    ticker_atual, ano_contrato = obter_ticker_carbono_atual()
     
     # Mostrar mensagem de atualização se necessário
     if st.session_state.get('mostrar_atualizacao', False):
@@ -238,13 +214,19 @@ def exibir_cotacao_carbono():
         st.session_state.moeda_carbono = moeda
         st.session_state.taxa_cambio = preco_euro
         st.session_state.moeda_real = moeda_real
+        st.session_state.ano_contrato = ano_contrato
         
         # Resetar flag
         st.session_state.cotacao_atualizada = False
+    else:
+        # Atualizar o ano_contrato se necessário (para caso o ano tenha mudado)
+        ticker_atual, ano_contrato_atual = obter_ticker_carbono_atual()
+        if st.session_state.ano_contrato != ano_contrato_atual:
+            st.session_state.ano_contrato = ano_contrato_atual
 
     # Exibe cotação atual do carbono
     st.sidebar.metric(
-        label=f"{st.session_state.contrato_atual} (tCO₂eq)",
+        label=f"Carbon Dec {st.session_state.ano_contrato} (tCO₂eq)",
         value=f"{st.session_state.moeda_carbono} {st.session_state.preco_carbono:.2f}",
         help=f"Contrato futuro com vencimento Dezembro {st.session_state.ano_contrato}"
     )
@@ -260,7 +242,7 @@ def exibir_cotacao_carbono():
     preco_carbono_reais = st.session_state.preco_carbono * st.session_state.taxa_cambio
     
     st.sidebar.metric(
-        label=f"{st.session_state.contrato_atual} (R$/tCO₂eq)",
+        label=f"Carbon Dec {st.session_state.ano_contrato} (R$/tCO₂eq)",
         value=f"R$ {preco_carbono_reais:.2f}",
         help="Preço do carbono convertido para Reais Brasileiros"
     )
@@ -268,13 +250,8 @@ def exibir_cotacao_carbono():
     # Informações adicionais
     with st.sidebar.expander("📅 Sobre os Vencimentos e Câmbio"):
         st.markdown(f"""
-        **Contrato Atual:** {st.session_state.contrato_atual}
+        **Contrato Atual:** Dec {st.session_state.ano_contrato}
         **Ticker:** `{ticker_atual}`
-        
-        **Status do CarbonDec25:**
-        - {'⏳ **VÁLIDO** (em vigor)' if st.session_state.contrato_atual == 'CarbonDec25' else '✅ **VENCIDO** (migrado para próximo contrato)'}
-        - Vencimento: Dezembro 2025
-        - Migração automática após vencimento
         
         **Câmbio Atual:**
         - 1 Euro = R$ {st.session_state.taxa_cambio:.2f}
@@ -282,13 +259,13 @@ def exibir_cotacao_carbono():
         
         **Ciclo dos Contratos:**
         - Dez 2024 → CO2Z24.NYB
-        - Dez 2025 → CO2Z25.NYB (Atual) 
+        - Dez 2025 → CO2Z25.NYB  
         - Dez 2026 → CO2Z26.NYB
         - Dez 2027 → CO2Z27.NYB
         
         **Migração Automática:**
-        - CarbonDec25 vigente até dezembro/2025
-        - Após vencimento: migra automaticamente
+        - A partir de Setembro: prepara para próximo ano
+        - O app ajusta automaticamente
         - Sem necessidade de atualização manual
         """)
 
@@ -357,6 +334,22 @@ with st.sidebar:
     umidade = umidade_valor / 100.0
     st.write(f"Umidade selecionada: {formatar_br(umidade_valor)}%")
     
+    # Temperatura como parâmetro variável - AJUSTADO: agora vai até 45°C
+    temperatura_valor = st.slider("Temperatura média anual (°C)", 15, 45, 25, 1)
+    st.write(f"Temperatura selecionada: {formatar_br(temperatura_valor)} °C")
+    
+    # DOC como parâmetro variável
+    doc_valor = st.slider("DOC (Carbono Orgânico Degradável)", 0.10, 0.50, 0.15, 0.01)
+    st.write(f"DOC selecionado: {formatar_br(doc_valor)}")
+    
+    # MCF como parâmetro variável
+    mcf_valor = st.slider("MCF (Methane Correction Factor)", 0.1, 1.0, 1.0, 0.1)
+    st.write(f"MCF selecionado: {formatar_br(mcf_valor)}")
+    
+    # Constante de decaimento como parâmetro variável
+    k_valor = st.slider("k (Constante de decaimento anual)", 0.01, 0.20, 0.06, 0.01)
+    st.write(f"Constante k selecionada: {formatar_br(k_valor)} ano⁻¹")
+    
     massa_exposta_kg = st.slider("Massa exposta na frente de trabalho (kg)", 50, 200, 100, 10)
     h_exposta = st.slider("Horas expostas por dia", 4, 24, 8, 1)
     
@@ -372,16 +365,13 @@ with st.sidebar:
 # PARÂMETROS FIXOS (DO CÓDIGO ORIGINAL)
 # =============================================================================
 
-T = 25  # Temperatura média (ºC)
-DOC = 0.15  # Carbono orgânico degradável (fração)
-DOCf_val = 0.0147 * T + 0.28
-MCF = 1  # Fator de correção de metano
+# NOTA: Os valores padrão agora são definidos pelos sliders acima
+# temperatura_valor, doc_valor, mcf_valor, k_valor são obtidos dos sliders
+
+# Parâmetros fixos que não variam
 F = 0.5  # Fração de metano no biogás
 OX = 0.1  # Fator de oxidação
 Ri = 0.0  # Metano recuperado
-
-# Constante de decaimento (fixa como no script anexo)
-k_ano = 0.06  # Constante de decaimento anual
 
 # Vermicompostagem (Yang et al. 2017) - valores fixos
 TOC_YANG = 0.436  # Fração de carbono orgânico total
@@ -483,6 +473,13 @@ PERFIL_N2O_THERMO /= PERFIL_N2O_THERMO.sum()
 # FUNÇÕES DE CÁLCULO (ADAPTADAS DO SCRIPT ANEXO)
 # =============================================================================
 
+def calcular_docf(temperatura):
+    """
+    Calcula DOCf dinamicamente baseado na temperatura
+    DOCf = 0,0147 × T + 0,28
+    """
+    return 0.0147 * temperatura + 0.28
+
 def ajustar_emissoes_pre_descarte(O2_concentracao):
     ch4_ajustado = CH4_pre_descarte_g_por_kg_dia
 
@@ -519,13 +516,53 @@ def calcular_emissoes_aterro(params, dias_simulacao=dias):
 
     fator_umid = (1 - umidade_val) / (1 - 0.55)
     f_aberto = np.clip((massa_exposta_kg / residuos_kg_dia) * (h_exposta / 24), 0.0, 1.0)
-    docf_calc = 0.0147 * temp_val + 0.28
+    
+    # Calcular DOCf dinamicamente baseado na temperatura
+    docf_calc = calcular_docf(temp_val)
 
-    potencial_CH4_por_kg = doc_val * docf_calc * MCF * F * (16/12) * (1 - Ri) * (1 - OX)
+    # USANDO VALORES DOS SLIDERS: mcf_valor, k_valor
+    potencial_CH4_por_kg = doc_val * docf_calc * mcf_valor * F * (16/12) * (1 - Ri) * (1 - OX)
     potencial_CH4_lote_diario = residuos_kg_dia * potencial_CH4_por_kg
 
     t = np.arange(1, dias_simulacao + 1, dtype=float)
-    kernel_ch4 = np.exp(-k_ano * (t - 1) / 365.0) - np.exp(-k_ano * t / 365.0)
+    kernel_ch4 = np.exp(-k_valor * (t - 1) / 365.0) - np.exp(-k_valor * t / 365.0)
+    entradas_diarias = np.ones(dias_simulacao, dtype=float)
+    emissoes_CH4 = fftconvolve(entradas_diarias, kernel_ch4, mode='full')[:dias_simulacao]
+    emissoes_CH4 *= potencial_CH4_lote_diario
+
+    E_aberto = 1.91
+    E_fechado = 2.15
+    E_medio = f_aberto * E_aberto + (1 - f_aberto) * E_fechado
+    E_medio_ajust = E_medio * fator_umid
+    emissao_diaria_N2O = (E_medio_ajust * (44/28) / 1_000_000) * residuos_kg_dia
+
+    kernel_n2o = np.array([PERFIL_N2O.get(d, 0) for d in range(1, 6)], dtype=float)
+    emissoes_N2O = fftconvolve(np.full(dias_simulacao, emissao_diaria_N2O), kernel_n2o, mode='full')[:dias_simulacao]
+
+    O2_concentracao = 21
+    emissoes_CH4_pre_descarte_kg, emissoes_N2O_pre_descarte_kg = calcular_emissoes_pre_descarte(O2_concentracao, dias_simulacao)
+
+    total_ch4_aterro_kg = emissoes_CH4 + emissoes_CH4_pre_descarte_kg
+    total_n2o_aterro_kg = emissoes_N2O + emissoes_N2O_pre_descarte_kg
+
+    return total_ch4_aterro_kg, total_n2o_aterro_kg
+
+# Função auxiliar para calcular emissões de aterro com parâmetros específicos
+def calcular_emissoes_aterro_com_params(params, mcf_param, k_param, dias_simulacao=dias):
+    umidade_val, temp_val, doc_val = params
+
+    fator_umid = (1 - umidade_val) / (1 - 0.55)
+    f_aberto = np.clip((massa_exposta_kg / residuos_kg_dia) * (h_exposta / 24), 0.0, 1.0)
+    
+    # Calcular DOCf dinamicamente baseado na temperatura
+    docf_calc = calcular_docf(temp_val)
+
+    # USANDO OS PARÂMETROS FORNECIDOS
+    potencial_CH4_por_kg = doc_val * docf_calc * mcf_param * F * (16/12) * (1 - Ri) * (1 - OX)
+    potencial_CH4_lote_diario = residuos_kg_dia * potencial_CH4_por_kg
+
+    t = np.arange(1, dias_simulacao + 1, dtype=float)
+    kernel_ch4 = np.exp(-k_param * (t - 1) / 365.0) - np.exp(-k_param * t / 365.0)
     entradas_diarias = np.ones(dias_simulacao, dtype=float)
     emissoes_CH4 = fftconvolve(entradas_diarias, kernel_ch4, mode='full')[:dias_simulacao]
     emissoes_CH4 *= potencial_CH4_lote_diario
@@ -599,6 +636,23 @@ def executar_simulacao_completa(parametros):
     reducao_tco2eq = total_aterro_tco2eq.sum() - total_vermi_tco2eq.sum()
     return reducao_tco2eq
 
+# Modificar a função executar_simulacao_completa para aceitar 5 parâmetros
+def executar_simulacao_completa_5_params(parametros):
+    umidade, T, DOC, MCF, k = parametros
+    
+    # Usar os parâmetros fornecidos em vez dos valores globais
+    params_base = [umidade, T, DOC]
+    
+    # Calcular emissões com os parâmetros fornecidos
+    ch4_aterro, n2o_aterro = calcular_emissoes_aterro_com_params(params_base, MCF, k)
+    ch4_vermi, n2o_vermi = calcular_emissoes_vermi(params_base)
+
+    total_aterro_tco2eq = (ch4_aterro * GWP_CH4_20 + n2o_aterro * GWP_N2O_20) / 1000
+    total_vermi_tco2eq = (ch4_vermi * GWP_CH4_20 + n2o_vermi * GWP_N2O_20) / 1000
+
+    reducao_tco2eq = total_aterro_tco2eq.sum() - total_vermi_tco2eq.sum()
+    return reducao_tco2eq
+
 def executar_simulacao_unfccc(parametros):
     umidade, T, DOC = parametros
 
@@ -606,6 +660,22 @@ def executar_simulacao_unfccc(parametros):
     total_aterro_tco2eq = (ch4_aterro * GWP_CH4_20 + n2o_aterro * GWP_N2O_20) / 1000
 
     ch4_compost, n2o_compost = calcular_emissoes_compostagem([umidade, T, DOC], dias_simulacao=dias, dias_compostagem=50)
+    total_compost_tco2eq = (ch4_compost * GWP_CH4_20 + n2o_compost * GWP_N2O_20) / 1000
+
+    reducao_tco2eq = total_aterro_tco2eq.sum() - total_compost_tco2eq.sum()
+    return reducao_tco2eq
+
+# Modificar a função executar_simulacao_unfccc para aceitar 5 parâmetros
+def executar_simulacao_unfccc_5_params(parametros):
+    umidade, T, DOC, MCF, k = parametros
+    
+    # Usar os parâmetros fornecidos
+    params_base = [umidade, T, DOC]
+    
+    ch4_aterro, n2o_aterro = calcular_emissoes_aterro_com_params(params_base, MCF, k)
+    total_aterro_tco2eq = (ch4_aterro * GWP_CH4_20 + n2o_aterro * GWP_N2O_20) / 1000
+
+    ch4_compost, n2o_compost = calcular_emissoes_compostagem(params_base, dias_simulacao=dias, dias_compostagem=50)
     total_compost_tco2eq = (ch4_compost * GWP_CH4_20 + n2o_compost * GWP_N2O_20) / 1000
 
     reducao_tco2eq = total_aterro_tco2eq.sum() - total_compost_tco2eq.sum()
@@ -619,7 +689,7 @@ def executar_simulacao_unfccc(parametros):
 if st.session_state.get('run_simulation', False):
     with st.spinner('Executando simulação...'):
         # Executar modelo base
-        params_base = [umidade, T, DOC]
+        params_base = [umidade, temperatura_valor, doc_valor]
 
         ch4_aterro_dia, n2o_aterro_dia = calcular_emissoes_aterro(params_base)
         ch4_vermi_dia, n2o_vermi_dia = calcular_emissoes_vermi(params_base)
@@ -699,8 +769,7 @@ if st.session_state.get('run_simulation', False):
         preco_carbono = st.session_state.preco_carbono
         moeda = st.session_state.moeda_carbono
         taxa_cambio = st.session_state.taxa_cambio
-        ano_contrato = st.session_state.ano_contrato
-        contrato_atual = st.session_state.contrato_atual
+        ano_contrato = st.session_state.ano_contrato  # Usa o ano armazenado
         
         # Calcular valores financeiros em Euros
         valor_tese_eur = calcular_valor_creditos(total_evitado_tese, preco_carbono, moeda)
@@ -720,7 +789,7 @@ if st.session_state.get('run_simulation', False):
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric(
-                f"Preço {contrato_atual} (Euro)", 
+                f"Preço Carbon Dec {ano_contrato} (Euro)", 
                 f"{moeda} {preco_carbono:.2f}/tCO₂eq",
                 help=f"Cotação do contrato futuro para Dezembro {ano_contrato}"
             )
@@ -741,7 +810,7 @@ if st.session_state.get('run_simulation', False):
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric(
-                f"Preço {contrato_atual} (R$)", 
+                f"Preço Carbon Dec {ano_contrato} (R$)", 
                 f"R$ {formatar_br(preco_carbono * taxa_cambio)}/tCO₂eq",
                 help="Preço do carbono convertido para Reais"
             )
@@ -758,14 +827,10 @@ if st.session_state.get('run_simulation', False):
                 help=f"Baseado em {formatar_br(total_evitado_unfccc)} tCO₂eq evitadas"
             )
         
-        # Status do contrato
-        status_contrato = "⏳ **VÁLIDO** (em vigor)" if contrato_atual == "CarbonDec25" else "✅ **VENCIDO** (migrado automaticamente)"
-        
         # Explicação sobre compra e venda
-        with st.expander(f"💡 Como funciona a comercialização no mercado de carbono? - {status_contrato}"):
+        with st.expander("💡 Como funciona a comercialização no mercado de carbono?"):
             st.markdown(f"""
-            **Para o {contrato_atual}:**
-            - **Status:** {status_contrato}
+            **Para o Carbon Dec {ano_contrato}:**
             - **Preço em Euro:** {moeda} {preco_carbono:.2f}/tCO₂eq
             - **Preço em Real:** R$ {formatar_br(preco_carbono * taxa_cambio)}/tCO₂eq
             - **Taxa de câmbio:** 1 Euro = R$ {taxa_cambio:.2f}
@@ -778,13 +843,12 @@ if st.session_state.get('run_simulation', False):
             - Receita em Euro: **{moeda} {formatar_br(valor_tese_eur)}**
             - Receita em Real: **R$ {formatar_br(valor_tese_brl)}**
             
-            **Contrato {contrato_atual}:**
+            **Contrato Carbon Dec {ano_contrato}:**
             - Cada contrato = 1.000 tCO₂eq
             - Vencimento: Dezembro {ano_contrato}
             - Mercado: ICE Exchange
             - Moeda original: Euros (€)
             - Ticker no Yahoo Finance: `CO2Z{str(ano_contrato)[-2:]}.NYB`
-            - **Migração automática:** Após vencimento em dezembro/2025
             """)
         
         # Métricas originais de emissões
@@ -857,17 +921,19 @@ if st.session_state.get('run_simulation', False):
         np.random.seed(50)  
         
         problem_tese = {
-            'num_vars': 3,
-            'names': ['umidade', 'T', 'DOC'],
+            'num_vars': 5,  # Agora com 5 variáveis
+            'names': ['umidade', 'T', 'DOC', 'MCF', 'k'],
             'bounds': [
                 [0.5, 0.85],         # umidade
-                [25.0, 45.0],       # temperatura
-                [0.15, 0.50],       # doc
+                [15.0, 45.0],       # temperatura - AJUSTADO: agora vai até 45°C
+                [0.10, 0.50],       # doc
+                [0.1, 1.0],         # MCF
+                [0.01, 0.20]        # k (constante de decaimento)
             ]
         }
 
         param_values_tese = sample(problem_tese, n_samples)
-        results_tese = Parallel(n_jobs=-1)(delayed(executar_simulacao_completa)(params) for params in param_values_tese)
+        results_tese = Parallel(n_jobs=-1)(delayed(executar_simulacao_completa_5_params)(params) for params in param_values_tese)
         Si_tese = analyze(problem_tese, np.array(results_tese), print_to_console=False)
         
         sensibilidade_df_tese = pd.DataFrame({
@@ -882,7 +948,7 @@ if st.session_state.get('run_simulation', False):
         ax.set_xlabel('Índice ST')
         ax.set_ylabel('')
         ax.grid(axis='x', linestyle='--', alpha=0.7)
-        ax.xaxis.set_major_formatter(br_formatter_sobol) # Adiciona formatação ao eixo x
+        ax.xaxis.set_major_formatter(br_formatter_sobol)
         st.pyplot(fig)
 
         # Análise de Sensibilidade Global (Sobol) - CENÁRIO UNFCCC
@@ -891,17 +957,19 @@ if st.session_state.get('run_simulation', False):
         np.random.seed(50)
         
         problem_unfccc = {
-            'num_vars': 3,
-            'names': ['umidade', 'T', 'DOC'],
+            'num_vars': 5,  # Agora com 5 variáveis
+            'names': ['umidade', 'T', 'DOC', 'MCF', 'k'],
             'bounds': [
-                [0.5, 0.85],  # Umidade
-                [25, 45],     # Temperatura
-                [0.15, 0.50], # DOC
+                [0.5, 0.85],   # Umidade
+                [15, 45],      # Temperatura - AJUSTADO: agora vai até 45°C
+                [0.10, 0.50],  # DOC
+                [0.1, 1.0],    # MCF
+                [0.01, 0.20]   # k
             ]
         }
 
         param_values_unfccc = sample(problem_unfccc, n_samples)
-        results_unfccc = Parallel(n_jobs=-1)(delayed(executar_simulacao_unfccc)(params) for params in param_values_unfccc)
+        results_unfccc = Parallel(n_jobs=-1)(delayed(executar_simulacao_unfccc_5_params)(params) for params in param_values_unfccc)
         Si_unfccc = analyze(problem_unfccc, np.array(results_unfccc), print_to_console=False)
         
         sensibilidade_df_unfccc = pd.DataFrame({
@@ -916,27 +984,28 @@ if st.session_state.get('run_simulation', False):
         ax.set_xlabel('Índice ST')
         ax.set_ylabel('')
         ax.grid(axis='x', linestyle='--', alpha=0.7)
-        ax.xaxis.set_major_formatter(br_formatter_sobol) # Adiciona formatação ao eixo x
+        ax.xaxis.set_major_formatter(br_formatter_sobol)
         st.pyplot(fig)
 
         # Análise de Incerteza (Monte Carlo) - PROPOSTA DA TESE
         st.subheader("Análise de Incerteza (Monte Carlo) - Proposta da Tese")
 
-        
         def gerar_parametros_mc_tese(n):
             np.random.seed(50)
             umidade_vals = np.random.uniform(0.75, 0.90, n)
-            temp_vals = np.random.normal(25, 3, n)
+            temp_vals = np.random.normal(25, 5, n)  # Ajustado para permitir temperaturas mais altas
             doc_vals = np.random.triangular(0.12, 0.15, 0.18, n)
+            mcf_vals = np.random.uniform(0.5, 1.0, n)  # Adicionar MCF
+            k_vals = np.random.uniform(0.04, 0.08, n)  # Adicionar k
             
-            return umidade_vals, temp_vals, doc_vals
+            return umidade_vals, temp_vals, doc_vals, mcf_vals, k_vals
 
-        umidade_vals, temp_vals, doc_vals = gerar_parametros_mc_tese(n_simulations)
+        umidade_vals, temp_vals, doc_vals, mcf_vals, k_vals = gerar_parametros_mc_tese(n_simulations)
         
         results_mc_tese = []
         for i in range(n_simulations):
-            params_tese = [umidade_vals[i], temp_vals[i], doc_vals[i]]
-            results_mc_tese.append(executar_simulacao_completa(params_tese))
+            params_tese = [umidade_vals[i], temp_vals[i], doc_vals[i], mcf_vals[i], k_vals[i]]
+            results_mc_tese.append(executar_simulacao_completa_5_params(params_tese))
 
         results_array_tese = np.array(results_mc_tese)
         media_tese = np.mean(results_array_tese)
@@ -961,17 +1030,19 @@ if st.session_state.get('run_simulation', False):
         def gerar_parametros_mc_unfccc(n):
             np.random.seed(50)
             umidade_vals = np.random.uniform(0.75, 0.90, n)
-            temp_vals = np.random.normal(25, 3, n)
+            temp_vals = np.random.normal(25, 5, n)  # Ajustado para permitir temperaturas mais altas
             doc_vals = np.random.triangular(0.12, 0.15, 0.18, n)
+            mcf_vals = np.random.uniform(0.5, 1.0, n)  # Adicionar MCF
+            k_vals = np.random.uniform(0.04, 0.08, n)  # Adicionar k
             
-            return umidade_vals, temp_vals, doc_vals
+            return umidade_vals, temp_vals, doc_vals, mcf_vals, k_vals
 
-        umidade_vals, temp_vals, doc_vals = gerar_parametros_mc_unfccc(n_simulations)
+        umidade_vals, temp_vals, doc_vals, mcf_vals, k_vals = gerar_parametros_mc_unfccc(n_simulations)
         
         results_mc_unfccc = []
         for i in range(n_simulations):
-            params_unfccc = [umidade_vals[i], temp_vals[i], doc_vals[i]]
-            results_mc_unfccc.append(executar_simulacao_unfccc(params_unfccc))
+            params_unfccc = [umidade_vals[i], temp_vals[i], doc_vals[i], mcf_vals[i], k_vals[i]]
+            results_mc_unfccc.append(executar_simulacao_unfccc_5_params(params_unfccc))
 
         results_array_unfccc = np.array(results_mc_unfccc)
         media_unfccc = np.mean(results_array_unfccc)
@@ -1031,10 +1102,9 @@ if st.session_state.get('run_simulation', False):
 else:
     st.info("Ajuste os parâmetros na barra lateral e clique em 'Executar Simulação' para ver os resultados.")
 
-# Rodapé
+# Rodapé - ATUALIZADO conforme solicitado
 st.markdown("---")
 st.markdown("""
-
 **Referências por Cenário:**
 
 **Cenário de Baseline (Aterro Sanitário):**
