@@ -420,8 +420,8 @@ def main():
                 for insight in structure_insights:
                     st.write(f"• {insight}")
     
-    # TABS PRINCIPAIS
-    tab1, tab2, tab3, tab4 = st.tabs(["📋 Dados", "📈 Visualizações", "🔍 Análises", "💾 Exportar"])
+    # TABS PRINCIPAIS (Agora apenas 3 tabs)
+    tab1, tab2, tab3 = st.tabs(["📋 Dados", "📈 Visualizações", "🔍 Análises"])
     
     with tab1:
         st.subheader("Visualização dos Dados")
@@ -586,61 +586,6 @@ def main():
             
             # Exibe o sumário
             st.markdown("\n".join(buffer))
-    
-    with tab4:
-        st.subheader("Exportação de Dados")
-        
-        export_col1, export_col2 = st.columns(2)
-        
-        with export_col1:
-            export_format = st.radio(
-                "Formato de exportação:",
-                ["CSV", "Excel", "JSON"]
-            )
-            
-            if export_format == "CSV":
-                csv_data = df.to_csv(index=False).encode('utf-8-sig')
-                st.download_button(
-                    label="📥 Baixar como CSV",
-                    data=csv_data,
-                    file_name=f"{selected_sheet.replace(' ', '_')}.csv",
-                    mime="text/csv"
-                )
-            
-            elif export_format == "Excel":
-                # Cria um Excel temporário
-                import io
-                buffer = io.BytesIO()
-                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                    df.to_excel(writer, index=False, sheet_name=selected_sheet[:31])
-                buffer.seek(0)
-                
-                st.download_button(
-                    label="📥 Baixar como Excel",
-                    data=buffer,
-                    file_name=f"{selected_sheet.replace(' ', '_')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-            
-            else:  # JSON
-                json_data = df.to_json(orient='records', indent=2)
-                st.download_button(
-                    label="📥 Baixar como JSON",
-                    data=json_data,
-                    file_name=f"{selected_sheet.replace(' ', '_')}.json",
-                    mime="application/json"
-                )
-        
-        with export_col2:
-            st.markdown("**Opções de exportação:**")
-            
-            export_all_sheets = st.checkbox("Exportar todas as abas")
-            if export_all_sheets:
-                st.info("Isso criará um arquivo ZIP com todas as abas.")
-            
-            clean_for_export = st.checkbox("Limpar dados antes de exportar", value=True)
-            if clean_for_export:
-                st.caption("Removerá colunas completamente vazias e linhas duplicadas.")
     
     # ---------- RODAPÉ ----------
     st.divider()
