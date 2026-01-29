@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 from datetime import datetime
 import warnings
 import os
-from functools import lru_cache
+import re
 
 warnings.filterwarnings("ignore")
 
@@ -37,6 +37,44 @@ SHEET_CONFIG = {
 }
 
 # =========================
+# FUNÇÕES AUXILIARES
+# =========================
+def clean_column_name(col):
+    """Limpa e padroniza nomes de colunas"""
+    if pd.isna(col):
+        return "coluna_sem_nome"
+    
+    col_str = str(col)
+    # Remove caracteres especiais e espaços extras
+    col_str = re.sub(r'[^\w\s]', ' ', col_str)
+    col_str = re.sub(r'\s+', ' ', col_str).strip()
+    
+    # Se ficar vazio após limpeza
+    if not col_str:
+        return "coluna_sem_nome"
+    
+    # Limita o tamanho
+    if len(col_str) > 50:
+        col_str = col_str[:47] + "..."
+    
+    return col_str
+
+def make_column_names_unique(columns):
+    """Garante que todos os nomes de colunas sejam únicos"""
+    unique_cols = []
+    seen = {}
+    
+    for i, col in enumerate(columns):
+        if col in seen:
+            seen[col] += 1
+            unique_cols.append(f"{col}_{seen[col]}")
+        else:
+            seen[col] = 1
+            unique_cols.append(col)
+    
+    return unique_cols
+
+# =========================
 # LOAD DO EXCEL LOCAL (GITHUB)
 # =========================
 @st.cache_data(ttl=86400, show_spinner="Carregando dataset...")
@@ -58,16 +96,27 @@ def load_data():
                 
                 # Limpeza básica de colunas
                 df = df.dropna(axis=1, how='all')  # Remove colunas completamente vazias
-                df.columns = [str(col).strip() for col in df.columns]  # Limpa nomes de colunas
+                
+                # Limpa e padroniza nomes de colunas
+                df.columns = [clean_column_name(col) for col in df.columns]
+                
+                # Garante nomes únicos
+                df.columns = make_column_names_unique(df.columns)
                 
                 # Identifica primeira linha como header se necessário
-                if df.iloc[0].isnull().all() or df.shape[0] > 0:
+                if not df.empty:
                     # Verifica se a primeira linha parece ser header duplicado
-                    first_row_values = df.iloc[0].astype(str).str.lower().tolist()
-                    header_indicators = ['project', 'name', 'standard', 'data', 'credit', 'method']
-                    if any(indicator in str(val) for val in first_row_values for indicator in header_indicators):
+                    first_row_str = df.iloc[0].astype(str).str.lower().str.cat(sep=' ')
+                    header_indicators = ['project', 'name', 'standard', 'data', 'credit', 'method', 'total', 'description']
+                    
+                    if any(indicator in first_row_str for indicator in header_indicators):
                         # Usa a primeira linha como header e remove ela
-                        df.columns = df.iloc[0]
+                        new_columns = df.iloc[0]
+                        # Limpa os novos nomes de colunas
+                        new_columns = [clean_column_name(col) for col in new_columns]
+                        new_columns = make_column_names_unique(new_columns)
+                        
+                        df.columns = new_columns
                         df = df[1:].reset_index(drop=True)
                 
                 data[sheet] = df
@@ -125,10 +174,15 @@ def analyze_sheet_structure(df, sheet_name):
         insights.append(f"📅 **Detectadas {len(year_cols)} colunas com dados anuais**")
     
     # Detecção de colunas com valores únicos (potenciais chaves)
-    unique_counts = df.nunique()
-    high_unique = unique_counts[unique_counts == df.shape[0]].index.tolist()
-    if high_unique:
-        insights.append(f"🔑 **Colunas com valores únicos**: {', '.join(high_unique[:3])}")
+    try:
+        unique_counts = df.nunique()
+        high_unique = unique_counts[unique_counts == df.shape[0]].index.tolist()
+        if high_unique:
+            # Converte para string e pega apenas os primeiros 3
+            high_unique_str = [str(col) for col in high_unique[:3]]
+            insights.append(f"🔑 **Colunas com valores únicos**: {', '.join(high_unique_str)}")
+    except Exception:
+        pass  # Ignora erros nesta análise
     
     return insights
 
@@ -202,12 +256,15 @@ def enhanced_smart_insights(df, sheet_name):
             numeric_cols = df.select_dtypes(include=[np.number]).columns
             if len(numeric_cols) > 0:
                 # Encontra coluna com maior soma
-                col_sums = df[numeric_cols].sum()
-                if not col_sums.empty:
-                    max_col = col_sums.idxmax()
-                    max_value = col_sums.max()
-                    if max_value > 0:
-                        insights.append(f"📈 **Maior volume de créditos**: Coluna '{max_col}' com {max_value:,.0f} unidades")
+                try:
+                    col_sums = df[numeric_cols].sum()
+                    if not col_sums.empty:
+                        max_col = col_sums.idxmax()
+                        max_value = col_sums.max()
+                        if max_value > 0:
+                            insights.append(f"📈 **Maior volume de créditos**: Coluna '{max_col}' com {max_value:,.0f} unidades")
+                except Exception:
+                    pass  # Ignora erros nesta análise
     
     elif "Methodologies" in sheet_name:
         # Análise para aba de metodologias
@@ -219,27 +276,39 @@ def enhanced_smart_insights(df, sheet_name):
         # Verifica coluna principal
         main_col = config.get('main_column')
         if main_col and main_col in df.columns:
-            unique_vals = df[main_col].nunique()
-            insights.append(f"🏛️ **{unique_vals} {main_col.split()[-1]} únicos**")
+            try:
+                unique_vals = df[main_col].nunique()
+                insights.append(f"🏛️ **{unique_vals} {main_col.split()[-1]} únicos**")
+            except Exception:
+                pass
     
     # Análise geral de qualidade
-    missing_rate = df.isnull().mean().mean() * 100
-    if missing_rate > 30:
-        insights.append(f"⚠️ **Alta taxa de valores ausentes**: {missing_rate:.1f}%")
-    elif missing_rate < 5:
-        insights.append(f"✅ **Dados bem preenchidos**: apenas {missing_rate:.1f}% ausentes")
+    try:
+        missing_rate = df.isnull().mean().mean() * 100
+        if missing_rate > 30:
+            insights.append(f"⚠️ **Alta taxa de valores ausentes**: {missing_rate:.1f}%")
+        elif missing_rate < 5:
+            insights.append(f"✅ **Dados bem preenchidos**: apenas {missing_rate:.1f}% ausentes")
+    except Exception:
+        pass
     
     # Detecção de outliers em colunas numéricas
-    numeric_cols = df.select_dtypes(include=[np.number]).columns
-    if len(numeric_cols) > 0:
-        for col in numeric_cols[:3]:  # Analisa apenas as primeiras 3 colunas
-            if df[col].notna().sum() > 10:  # Tem dados suficientes
-                q1 = df[col].quantile(0.25)
-                q3 = df[col].quantile(0.75)
-                iqr = q3 - q1
-                outliers = ((df[col] < (q1 - 1.5 * iqr)) | (df[col] > (q3 + 1.5 * iqr))).sum()
-                if outliers > 0:
-                    insights.append(f"🔍 **Possíveis outliers em '{col}'**: {outliers} valores")
+    try:
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        if len(numeric_cols) > 0:
+            for col in numeric_cols[:3]:  # Analisa apenas as primeiras 3 colunas
+                if col in df.columns and pd.api.types.is_numeric_dtype(df[col]):
+                    valid_data = df[col].dropna()
+                    if len(valid_data) > 10:  # Tem dados suficientes
+                        q1 = valid_data.quantile(0.25)
+                        q3 = valid_data.quantile(0.75)
+                        iqr = q3 - q1
+                        if iqr > 0:  # Evita divisão por zero
+                            outliers = ((valid_data < (q1 - 1.5 * iqr)) | (valid_data > (q3 + 1.5 * iqr))).sum()
+                            if outliers > 0:
+                                insights.append(f"🔍 **Possíveis outliers em '{col}'**: {outliers} valores")
+    except Exception:
+        pass  # Ignora erros na detecção de outliers
     
     return insights
 
@@ -276,45 +345,51 @@ def create_yearly_trend_chart(yearly_data):
 
 def create_data_quality_chart(df):
     """Cria gráfico de qualidade dos dados"""
-    missing_percent = df.isnull().mean() * 100
-    top_missing = missing_percent.sort_values(ascending=False).head(10)
-    
-    if len(top_missing) == 0:
+    try:
+        missing_percent = df.isnull().mean() * 100
+        top_missing = missing_percent.sort_values(ascending=False).head(10)
+        
+        if len(top_missing) == 0:
+            return None
+        
+        fig = px.bar(
+            x=top_missing.values,
+            y=top_missing.index,
+            orientation='h',
+            title='Top 10 Colunas com Mais Valores Ausentes',
+            labels={'x': '% Ausente', 'y': 'Coluna'},
+            color=top_missing.values,
+            color_continuous_scale='RdYlGn_r'
+        )
+        
+        fig.update_layout(showlegend=False)
+        return fig
+    except Exception:
         return None
-    
-    fig = px.bar(
-        x=top_missing.values,
-        y=top_missing.index,
-        orientation='h',
-        title='Top 10 Colunas com Mais Valores Ausentes',
-        labels={'x': '% Ausente', 'y': 'Coluna'},
-        color=top_missing.values,
-        color_continuous_scale='RdYlGn_r'
-    )
-    
-    fig.update_layout(showlegend=False)
-    return fig
 
 def create_project_distribution_chart(df, sheet_name):
     """Cria gráfico de distribuição de projetos"""
-    if sheet_name in SHEET_CONFIG:
-        config = SHEET_CONFIG[sheet_name]
-        main_col = config.get('main_column')
-        
-        if main_col and main_col in df.columns:
-            value_counts = df[main_col].value_counts().head(10)
+    try:
+        if sheet_name in SHEET_CONFIG:
+            config = SHEET_CONFIG[sheet_name]
+            main_col = config.get('main_column')
             
-            if len(value_counts) > 0:
-                fig = px.bar(
-                    x=value_counts.values,
-                    y=value_counts.index,
-                    orientation='h',
-                    title=f'Top 10 {main_col}',
-                    labels={'x': 'Contagem', 'y': main_col},
-                    color=value_counts.values,
-                    color_continuous_scale='Viridis'
-                )
-                return fig
+            if main_col and main_col in df.columns:
+                value_counts = df[main_col].value_counts().head(10)
+                
+                if len(value_counts) > 0:
+                    fig = px.bar(
+                        x=value_counts.values,
+                        y=value_counts.index,
+                        orientation='h',
+                        title=f'Top 10 {main_col[:30]}...' if len(main_col) > 30 else f'Top 10 {main_col}',
+                        labels={'x': 'Contagem', 'y': main_col},
+                        color=value_counts.values,
+                        color_continuous_scale='Viridis'
+                    )
+                    return fig
+    except Exception:
+        pass
     
     return None
 
@@ -356,7 +431,6 @@ def main():
         st.header("⚙️ Configurações")
         
         max_rows = st.slider("Máximo de linhas para visualizar:", 10, 500, 100)
-        auto_clean = st.toggle("Limpeza automática de dados", False)
     
     # ---------- VISÃO GERAL ----------
     if show_summary:
@@ -408,19 +482,22 @@ def main():
     # Insights avançados
     if show_insights:
         with st.expander("🧠 Insights Inteligentes", expanded=True):
-            insights = enhanced_smart_insights(df, selected_sheet)
-            for insight in insights:
-                st.write(f"• {insight}")
-            
-            # Análise de estrutura
-            structure_insights = analyze_sheet_structure(df, selected_sheet)
-            if structure_insights:
-                st.markdown("---")
-                st.markdown("**Análise de Estrutura:**")
-                for insight in structure_insights:
+            try:
+                insights = enhanced_smart_insights(df, selected_sheet)
+                for insight in insights:
                     st.write(f"• {insight}")
+                
+                # Análise de estrutura
+                structure_insights = analyze_sheet_structure(df, selected_sheet)
+                if structure_insights:
+                    st.markdown("---")
+                    st.markdown("**Análise de Estrutura:**")
+                    for insight in structure_insights:
+                        st.write(f"• {insight}")
+            except Exception as e:
+                st.warning(f"Não foi possível gerar insights: {str(e)[:100]}")
     
-    # TABS PRINCIPAIS (Agora apenas 3 tabs)
+    # TABS PRINCIPAIS
     tab1, tab2, tab3 = st.tabs(["📋 Dados", "📈 Visualizações", "🔍 Análises"])
     
     with tab1:
@@ -429,10 +506,13 @@ def main():
         # Filtros básicos
         col_filter1, col_filter2 = st.columns(2)
         with col_filter1:
+            # Filtra colunas problemáticas
+            available_columns = [col for col in df.columns if not pd.isna(col) and str(col).strip() != '']
+            
             show_columns = st.multiselect(
                 "Selecionar colunas:",
-                df.columns.tolist(),
-                default=df.columns.tolist()[:10] if len(df.columns) > 10 else df.columns.tolist()
+                available_columns,
+                default=available_columns[:10] if len(available_columns) > 10 else available_columns
             )
         
         with col_filter2:
@@ -442,16 +522,33 @@ def main():
                 n_rows = len(df)
         
         # Dataframe filtrado
-        filtered_df = df[show_columns].head(n_rows) if show_columns else df.head(n_rows)
-        st.dataframe(filtered_df, use_container_width=True, height=400)
+        try:
+            if show_columns:
+                filtered_df = df[show_columns].head(n_rows)
+            else:
+                filtered_df = df.head(n_rows)
+            
+            # Exibe o dataframe com tratamento de erros
+            st.dataframe(filtered_df, use_container_width=True, height=400)
+        except Exception as e:
+            st.error(f"Erro ao exibir dados: {str(e)[:200]}")
+            # Tenta exibir as primeiras colunas como fallback
+            try:
+                fallback_cols = df.columns[:5].tolist()
+                st.dataframe(df[fallback_cols].head(n_rows), use_container_width=True, height=400)
+            except:
+                st.dataframe(df.head(n_rows), use_container_width=True, height=400)
         
         # Estatísticas rápidas
         with st.expander("📊 Estatísticas Descritivas"):
-            numeric_cols = filtered_df.select_dtypes(include=[np.number]).columns
-            if len(numeric_cols) > 0:
-                st.dataframe(filtered_df[numeric_cols].describe().round(2), use_container_width=True)
-            else:
-                st.info("Nenhuma coluna numérica para estatísticas.")
+            try:
+                numeric_cols = df.select_dtypes(include=[np.number]).columns
+                if len(numeric_cols) > 0:
+                    st.dataframe(df[numeric_cols].describe().round(2), use_container_width=True)
+                else:
+                    st.info("Nenhuma coluna numérica para estatísticas.")
+            except Exception:
+                st.info("Não foi possível calcular estatísticas descritivas.")
     
     with tab2:
         st.subheader("Visualizações Gráficas")
@@ -460,45 +557,57 @@ def main():
         
         with viz_col1:
             # Gráfico 1: Distribuição de valores numéricos
-            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-            if numeric_cols:
-                selected_num_col = st.selectbox("Selecione coluna numérica:", numeric_cols)
-                
-                if pd.api.types.is_numeric_dtype(df[selected_num_col]):
-                    fig = px.histogram(
-                        df, 
-                        x=selected_num_col,
-                        title=f"Distribuição de {selected_num_col}",
-                        nbins=50,
-                        color_discrete_sequence=['#2ecc71'],
-                        opacity=0.8
-                    )
-                    fig.update_layout(bargap=0.1)
-                    st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("Nenhuma coluna numérica para histograma.")
+            try:
+                numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+                if numeric_cols:
+                    selected_num_col = st.selectbox("Selecione coluna numérica:", numeric_cols)
+                    
+                    if pd.api.types.is_numeric_dtype(df[selected_num_col]):
+                        fig = px.histogram(
+                            df, 
+                            x=selected_num_col,
+                            title=f"Distribuição de {selected_num_col[:30]}..." if len(selected_num_col) > 30 else f"Distribuição de {selected_num_col}",
+                            nbins=30,
+                            color_discrete_sequence=['#2ecc71'],
+                            opacity=0.8
+                        )
+                        fig.update_layout(bargap=0.1)
+                        st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("Nenhuma coluna numérica para histograma.")
+            except Exception:
+                st.info("Não foi possível criar o histograma.")
         
         with viz_col2:
             # Gráfico 2: Qualidade dos dados
             if show_quality:
-                quality_fig = create_data_quality_chart(df)
-                if quality_fig:
-                    st.plotly_chart(quality_fig, use_container_width=True)
-                else:
-                    st.info("Informações de qualidade não disponíveis.")
+                try:
+                    quality_fig = create_data_quality_chart(df)
+                    if quality_fig:
+                        st.plotly_chart(quality_fig, use_container_width=True)
+                    else:
+                        st.info("Informações de qualidade não disponíveis.")
+                except Exception:
+                    st.info("Não foi possível criar o gráfico de qualidade.")
             
             # Gráfico 3: Distribuição de projetos
-            project_fig = create_project_distribution_chart(df, selected_sheet)
-            if project_fig:
-                st.plotly_chart(project_fig, use_container_width=True)
+            try:
+                project_fig = create_project_distribution_chart(df, selected_sheet)
+                if project_fig:
+                    st.plotly_chart(project_fig, use_container_width=True)
+            except Exception:
+                pass
         
         # Gráfico de tendência anual (se aplicável)
         if show_yearly:
-            yearly_data = extract_yearly_data(df, selected_sheet)
-            if yearly_data:
-                trend_fig = create_yearly_trend_chart(yearly_data)
-                if trend_fig:
-                    st.plotly_chart(trend_fig, use_container_width=True)
+            try:
+                yearly_data = extract_yearly_data(df, selected_sheet)
+                if yearly_data:
+                    trend_fig = create_yearly_trend_chart(yearly_data)
+                    if trend_fig:
+                        st.plotly_chart(trend_fig, use_container_width=True)
+            except Exception:
+                pass
     
     with tab3:
         st.subheader("Análises Avançadas")
@@ -509,83 +618,95 @@ def main():
         )
         
         if analysis_type == "Correlações":
-            numeric_df = df.select_dtypes(include=[np.number])
-            if numeric_df.shape[1] >= 2:
-                corr_matrix = numeric_df.corr()
-                
-                fig = go.Figure(data=go.Heatmap(
-                    z=corr_matrix.values,
-                    x=corr_matrix.columns,
-                    y=corr_matrix.columns,
-                    colorscale='RdBu',
-                    zmid=0,
-                    text=corr_matrix.round(2).values,
-                    texttemplate='%{text}',
-                    hoverongaps=False
-                ))
-                
-                fig.update_layout(
-                    title='Matriz de Correlação',
-                    width=600,
-                    height=600
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.warning("Necessárias pelo menos 2 colunas numéricas para análise de correlação.")
+            try:
+                numeric_df = df.select_dtypes(include=[np.number])
+                if numeric_df.shape[1] >= 2:
+                    corr_matrix = numeric_df.corr()
+                    
+                    fig = go.Figure(data=go.Heatmap(
+                        z=corr_matrix.values,
+                        x=corr_matrix.columns,
+                        y=corr_matrix.columns,
+                        colorscale='RdBu',
+                        zmid=0,
+                        text=corr_matrix.round(2).values,
+                        texttemplate='%{text}',
+                        hoverongaps=False
+                    ))
+                    
+                    fig.update_layout(
+                        title='Matriz de Correlação',
+                        width=600,
+                        height=600
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.warning("Necessárias pelo menos 2 colunas numéricas para análise de correlação.")
+            except Exception:
+                st.warning("Não foi possível calcular a matriz de correlação.")
         
         elif analysis_type == "Valores Ausentes":
-            missing_df = pd.DataFrame({
-                'Coluna': df.columns,
-                '% Ausente': (df.isnull().mean() * 100).round(2),
-                'Total Ausente': df.isnull().sum()
-            }).sort_values('% Ausente', ascending=False)
-            
-            st.dataframe(missing_df, use_container_width=True, height=400)
-            
-            # Visualização de missing
-            fig = px.bar(
-                missing_df.head(20),
-                x='% Ausente',
-                y='Coluna',
-                orientation='h',
-                title='Top 20 Colunas com Valores Ausentes'
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            try:
+                missing_df = pd.DataFrame({
+                    'Coluna': df.columns,
+                    '% Ausente': (df.isnull().mean() * 100).round(2),
+                    'Total Ausente': df.isnull().sum()
+                }).sort_values('% Ausente', ascending=False)
+                
+                st.dataframe(missing_df, use_container_width=True, height=400)
+                
+                # Visualização de missing
+                if len(missing_df) > 0:
+                    fig = px.bar(
+                        missing_df.head(20),
+                        x='% Ausente',
+                        y='Coluna',
+                        orientation='h',
+                        title='Top 20 Colunas com Valores Ausentes'
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+            except Exception:
+                st.warning("Não foi possível analisar valores ausentes.")
         
         elif analysis_type == "Distribuição":
-            # Distribuição de valores únicos
-            unique_counts = pd.DataFrame({
-                'Coluna': df.columns,
-                'Valores Únicos': df.nunique(),
-                'Tipo': df.dtypes.astype(str)
-            }).sort_values('Valores Únicos', ascending=False)
-            
-            st.dataframe(unique_counts, use_container_width=True, height=400)
+            try:
+                # Distribuição de valores únicos
+                unique_counts = pd.DataFrame({
+                    'Coluna': df.columns,
+                    'Valores Únicos': df.nunique(),
+                    'Tipo': df.dtypes.astype(str)
+                }).sort_values('Valores Únicos', ascending=False)
+                
+                st.dataframe(unique_counts, use_container_width=True, height=400)
+            except Exception:
+                st.warning("Não foi possível analisar a distribuição de valores únicos.")
         
         else:  # Sumário
-            # Buffer para análise detalhada
-            buffer = []
-            
-            buffer.append(f"### 📋 Sumário da Aba: {selected_sheet}")
-            buffer.append(f"- **Dimensões**: {df.shape[0]} linhas × {df.shape[1]} colunas")
-            buffer.append(f"- **Memória usada**: {df.memory_usage(deep=True).sum() / 1024 / 1024:.1f} MB")
-            
-            # Tipos de dados
-            dtype_counts = df.dtypes.value_counts()
-            buffer.append("\n**Tipos de dados:**")
-            for dtype, count in dtype_counts.items():
-                buffer.append(f"  - {dtype}: {count} colunas")
-            
-            # Colunas com mais dados
-            complete_cols = df.notna().sum().sort_values(ascending=False).head(5)
-            buffer.append("\n**Colunas mais completas:**")
-            for col, count in complete_cols.items():
-                percent = (count / len(df)) * 100
-                buffer.append(f"  - {col}: {count} valores ({percent:.1f}%)")
-            
-            # Exibe o sumário
-            st.markdown("\n".join(buffer))
+            try:
+                # Buffer para análise detalhada
+                buffer = []
+                
+                buffer.append(f"### 📋 Sumário da Aba: {selected_sheet}")
+                buffer.append(f"- **Dimensões**: {df.shape[0]} linhas × {df.shape[1]} colunas")
+                
+                # Tipos de dados
+                dtype_counts = df.dtypes.value_counts()
+                buffer.append("\n**Tipos de dados:**")
+                for dtype, count in dtype_counts.items():
+                    buffer.append(f"  - {dtype}: {count} colunas")
+                
+                # Colunas com mais dados
+                complete_cols = df.notna().sum().sort_values(ascending=False).head(5)
+                buffer.append("\n**Colunas mais completas:**")
+                for col, count in complete_cols.items():
+                    percent = (count / len(df)) * 100
+                    buffer.append(f"  - {col}: {count} valores ({percent:.1f}%)")
+                
+                # Exibe o sumário
+                st.markdown("\n".join(buffer))
+            except Exception:
+                st.warning("Não foi possível gerar o sumário.")
     
     # ---------- RODAPÉ ----------
     st.divider()
