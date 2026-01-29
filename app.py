@@ -28,12 +28,12 @@ SHEET_CONFIG = {
     "1. Standards": {"description": "Padrões e registros de carbono", "main_column": "Name of standard/registry/platform", "has_filters": True},
     "2. Platforms": {"description": "Plataformas de mercado de carbono", "main_column": "Platform", "has_filters": True},
     "3. Methodologies": {"description": "Metodologias de cálculo de carbono", "main_column": "Data sourced from methodology document (see reference in column AD)", "has_filters": True},
-    "4. Agriculture": {"description": "Projetos agrícolas", "has_yearly_data": True, "credit_column_pattern": "Credits issued by vintage", "has_filters": True},
-    "5. Agroforestry-AR & Grassland": {"description": "Projetos agroflorestais e pastagens", "has_yearly_data": True, "has_filters": True},
-    "6. Energy and Other": {"description": "Projetos de energia e outros", "has_yearly_data": True, "has_filters": True},
-    "7. Plan Vivo, Acorn, Social C": {"description": "Padrões específicos", "main_column": "Standard", "has_filters": True},
+    "4. Agriculture": {"description": "Projetos agrícolas", "has_yearly_data": True, "credit_column_pattern": "Credits issued by vintage", "has_filters": True, "country_column": "Country"},
+    "5. Agroforestry-AR & Grassland": {"description": "Projetos agroflorestais e pastagens", "has_yearly_data": True, "has_filters": True, "country_column": "Country"},
+    "6. Energy and Other": {"description": "Projetos de energia e outros", "has_yearly_data": True, "has_filters": True, "country_column": "Country"},
+    "7. Plan Vivo, Acorn, Social C": {"description": "Padrões específicos", "main_column": "Standard", "has_filters": True, "country_column": "Country"},
     "8. Puro.earth": {"description": "Projetos Puro.earth", "main_column": "Unnamed: 0", "has_filters": True},
-    "9. Nori and BCarbon": {"description": "Projetos Nori e BCarbon", "main_column": "Standard", "has_filters": True}
+    "9. Nori and BCarbon": {"description": "Projetos Nori e BCarbon", "main_column": "Standard", "has_filters": True, "country_column": "Country"}
 }
 
 # =========================
@@ -81,40 +81,51 @@ def detect_filter_columns(df, sheet_name):
     if df.empty or sheet_name == "README":
         return filter_columns
     
+    # Configuração específica da aba
+    config = SHEET_CONFIG.get(sheet_name, {})
+    
+    # Primeiro, verificar se há uma coluna de país configurada
+    country_column = config.get('country_column')
+    if country_column:
+        # Verificar variações possíveis do nome da coluna
+        possible_country_names = [
+            country_column,
+            'country',
+            'countries',
+            'país',
+            'países',
+            'nation',
+            'location',
+            'region'
+        ]
+        
+        for col in df.columns:
+            col_lower = str(col).lower()
+            if any(country_name.lower() in col_lower for country_name in possible_country_names):
+                if not df[col].isna().all():
+                    unique_vals = df[col].nunique()
+                    if 1 < unique_vals < 200:  # Países geralmente têm entre 1 e 200 valores únicos
+                        filter_columns['country'] = col
+                        break
+    
     # Padrões para diferentes tipos de filtros
     patterns = {
-        'country': ['country', 'país', 'nation', 'location', 'region', 'country'],
-        'standard': ['standard', 'registry', 'platform', 'protocol'],
-        'type': ['type', 'tipo', 'category', 'class', 'classification'],
-        'methodology': ['methodology', 'method', 'metodologia', 'approach'],
-        'year': ['year', 'ano', 'vintage', 'date', 'period'],
-        'credits': ['credit', 'credito', 'volume', 'amount', 'quantity', 'total', 'issued'],
+        'standard': ['standard', 'registry', 'platform', 'protocol', 'verra', 'gold', 'carbon'],
+        'type': ['type', 'tipo', 'category', 'class', 'classification', 'sector'],
+        'methodology': ['methodology', 'method', 'metodologia', 'approach', 'protocol'],
+        'year': ['year', 'ano', 'vintage', 'date', 'period', 'issued'],
+        'credits': ['credit', 'credito', 'volume', 'amount', 'quantity', 'total', 'issued', 'retired'],
         'project': ['project', 'projeto', 'name', 'title', 'id'],
-        'sector': ['sector', 'setor', 'industry', 'agriculture', 'agroforestry', 'energy']
+        'status': ['status', 'state', 'condition', 'phase', 'stage']
     }
     
-    # Abas específicas têm prioridades diferentes
-    sheet_priority = {
-        "4. Agriculture": ['country', 'type', 'credits', 'year', 'project'],
-        "5. Agroforestry-AR & Grassland": ['country', 'type', 'credits', 'year', 'project'],
-        "6. Energy and Other": ['country', 'type', 'credits', 'year', 'project'],
-        "7. Plan Vivo, Acorn, Social C": ['country', 'standard', 'type', 'credits'],
-        "8. Puro.earth": ['type', 'country', 'credits'],
-        "9. Nori and BCarbon": ['country', 'standard', 'type', 'credits'],
-        "1. Standards": ['standard', 'type'],
-        "2. Platforms": ['platform', 'type'],
-        "3. Methodologies": ['methodology', 'type']
-    }
-    
-    priority_list = sheet_priority.get(sheet_name, list(patterns.keys()))
-    
-    for filter_type in priority_list:
-        if filter_type not in patterns:
+    # Buscar outros filtros
+    for filter_type, keywords in patterns.items():
+        # Se já encontramos esse tipo, pular
+        if filter_type in filter_columns:
             continue
             
-        keywords = patterns[filter_type]
         matching_cols = []
-        
         for col in df.columns:
             col_lower = str(col).lower()
             if any(keyword in col_lower for keyword in keywords):
@@ -140,6 +151,79 @@ def detect_filter_columns(df, sheet_name):
     
     return filter_columns
 
+def extract_countries_from_dataframe(df, country_column):
+    """Extrai e limpa lista de países do DataFrame"""
+    if country_column not in df.columns:
+        return []
+    
+    # Extrair países únicos
+    countries = df[country_column].dropna().astype(str).unique()
+    
+    # Limpar os nomes dos países
+    cleaned_countries = []
+    for country in countries:
+        # Remover espaços extras e caracteres especiais
+        country_clean = str(country).strip()
+        # Remover números e caracteres especiais no início
+        country_clean = re.sub(r'^\d+\.\s*', '', country_clean)
+        country_clean = re.sub(r'^[^a-zA-Z]+', '', country_clean)
+        
+        if country_clean and len(country_clean) > 1:
+            cleaned_countries.append(country_clean)
+    
+    # Remover duplicados após limpeza
+    unique_countries = list(set(cleaned_countries))
+    
+    # Ordenar alfabeticamente
+    unique_countries.sort(key=lambda x: x.lower())
+    
+    return unique_countries
+
+def get_country_names_in_portuguese(country_name):
+    """Traduz nomes de países para português quando conhecidos"""
+    country_translations = {
+        'brazil': 'Brasil',
+        'united states': 'Estados Unidos',
+        'united kingdom': 'Reino Unido',
+        'mexico': 'México',
+        'canada': 'Canadá',
+        'germany': 'Alemanha',
+        'france': 'França',
+        'spain': 'Espanha',
+        'portugal': 'Portugal',
+        'italy': 'Itália',
+        'china': 'China',
+        'india': 'Índia',
+        'japan': 'Japão',
+        'australia': 'Austrália',
+        'argentina': 'Argentina',
+        'chile': 'Chile',
+        'colombia': 'Colômbia',
+        'peru': 'Peru',
+        'uruguay': 'Uruguai',
+        'paraguay': 'Paraguai',
+        'bolivia': 'Bolívia',
+        'venezuela': 'Venezuela',
+        'ecuador': 'Equador',
+        'costarica': 'Costa Rica',
+        'panama': 'Panamá',
+        'nicaragua': 'Nicarágua',
+        'honduras': 'Honduras',
+        'guatemala': 'Guatemala',
+        'elsalvador': 'El Salvador',
+        'cuba': 'Cuba',
+        'dominicanrepublic': 'República Dominicana',
+        'puertorico': 'Porto Rico'
+    }
+    
+    country_lower = str(country_name).lower().strip()
+    for eng_name, port_name in country_translations.items():
+        if eng_name in country_lower or country_lower in eng_name:
+            return port_name
+    
+    # Se não encontrar tradução, retorna o nome original capitalizado
+    return country_name.strip().title()
+
 def apply_filters(df, filters):
     """Aplica filtros ao DataFrame"""
     if not filters:
@@ -160,10 +244,17 @@ def apply_filters(df, filters):
                         ]
                 elif isinstance(filter_value, list) and filter_value:
                     # Filtro de múltiplos valores
-                    filtered_df = filtered_df[filtered_df[filter_col].isin(filter_value)]
+                    # Converter para string para comparação robusta
+                    filter_values_str = [str(v).strip().lower() for v in filter_value]
+                    filtered_df = filtered_df[
+                        filtered_df[filter_col].astype(str).str.strip().str.lower().isin(filter_values_str)
+                    ]
                 elif filter_value != 'Todos':
                     # Filtro de valor único
-                    filtered_df = filtered_df[filtered_df[filter_col] == filter_value]
+                    filter_value_str = str(filter_value).strip().lower()
+                    filtered_df = filtered_df[
+                        filtered_df[filter_col].astype(str).str.strip().str.lower() == filter_value_str
+                    ]
             except Exception as e:
                 st.warning(f"Erro ao aplicar filtro na coluna '{filter_col}': {str(e)[:100]}")
                 continue
@@ -203,7 +294,7 @@ def load_data():
                 if not df.empty:
                     # Verifica se a primeira linha parece ser header duplicado
                     first_row_str = df.iloc[0].astype(str).str.lower().str.cat(sep=' ')
-                    header_indicators = ['project', 'name', 'standard', 'data', 'credit', 'method', 'total', 'description']
+                    header_indicators = ['project', 'name', 'standard', 'data', 'credit', 'method', 'total', 'description', 'country']
                     
                     if any(indicator in first_row_str for indicator in header_indicators):
                         # Usa a primeira linha como header e remove ela
@@ -340,6 +431,21 @@ def enhanced_smart_insights(df, sheet_name):
                             insights.append(f"📈 **Maior volume de créditos**: Coluna '{max_col}' com {max_value:,.0f} unidades")
                 except Exception:
                     pass  # Ignora erros nesta análise
+        
+        # Verificar se há dados de países
+        country_column = config.get('country_column')
+        if country_column:
+            # Buscar coluna de país por nome aproximado
+            for col in df.columns:
+                if 'country' in str(col).lower():
+                    unique_countries = df[col].dropna().nunique()
+                    if unique_countries > 0:
+                        insights.append(f"🌍 **{unique_countries} países diferentes** identificados")
+                        # Mostrar alguns exemplos
+                        sample_countries = df[col].dropna().unique()[:5]
+                        country_list = ", ".join([str(c) for c in sample_countries])
+                        insights.append(f"   Exemplos: {country_list}")
+                    break
     
     elif "Methodologies" in sheet_name:
         # Análise para aba de metodologias
@@ -468,6 +574,38 @@ def create_project_distribution_chart(df, sheet_name):
     
     return None
 
+def create_country_distribution_chart(df, country_column):
+    """Cria gráfico de distribuição por país"""
+    try:
+        if country_column in df.columns:
+            # Contar ocorrências por país
+            country_counts = df[country_column].value_counts().head(15)
+            
+            if len(country_counts) > 0:
+                # Traduzir nomes de países para português
+                country_names = [get_country_names_in_portuguese(country) for country in country_counts.index]
+                
+                fig = px.bar(
+                    x=country_counts.values,
+                    y=country_names,
+                    orientation='h',
+                    title='Distribuição por País (Top 15)',
+                    labels={'x': 'Número de Projetos/Registros', 'y': 'País'},
+                    color=country_counts.values,
+                    color_continuous_scale='Blues'
+                )
+                
+                fig.update_layout(
+                    yaxis={'categoryorder': 'total ascending'},
+                    height=500
+                )
+                
+                return fig
+    except Exception:
+        pass
+    
+    return None
+
 def create_filter_metrics(df_filtered, df_original, active_filters):
     """Cria métricas de filtro aplicado"""
     if df_filtered.empty or df_original.empty:
@@ -565,22 +703,48 @@ def main():
             active_filters = {}
             
             if filter_columns:
-                # Filtro de País (se detectado)
+                # Filtro de País (prioridade máxima)
                 if 'country' in filter_columns:
                     country_col = filter_columns['country']
                     if country_col in df.columns:
-                        # Obtém países únicos e ordena
-                        countries = df[country_col].dropna().unique().tolist()
-                        if countries:
-                            countries = ['Todos'] + sorted([str(c) for c in countries])
-                            selected_country = st.selectbox(
-                                "🌍 País:",
-                                countries,
-                                index=0
+                        # Extrair e limpar lista de países
+                        countries_raw = extract_countries_from_dataframe(df, country_col)
+                        
+                        if countries_raw:
+                            # Traduzir alguns países para português para facilitar
+                            countries_display = []
+                            countries_mapping = {}
+                            
+                            for country in countries_raw:
+                                display_name = get_country_names_in_portuguese(country)
+                                countries_display.append(display_name)
+                                countries_mapping[display_name] = country
+                            
+                            # Ordenar por nome em português
+                            sorted_indices = np.argsort(countries_display)
+                            countries_display_sorted = [countries_display[i] for i in sorted_indices]
+                            countries_raw_sorted = [countries_raw[sorted_indices[i]] for i in range(len(sorted_indices))]
+                            
+                            selected_countries_display = st.multiselect(
+                                "🌍 País(es):",
+                                options=["Todos"] + countries_display_sorted,
+                                default=["Todos"],
+                                help="Selecione 'Todos' para ver todos os países, ou escolha países específicos"
                             )
-                            if selected_country != 'Todos':
-                                filters[country_col] = selected_country
-                                active_filters['País'] = selected_country
+                            
+                            if "Todos" not in selected_countries_display and selected_countries_display:
+                                # Mapear de volta para os nomes originais
+                                selected_countries_raw = []
+                                for display_name in selected_countries_display:
+                                    # Encontrar o nome original correspondente
+                                    for i, disp in enumerate(countries_display_sorted):
+                                        if disp == display_name:
+                                            selected_countries_raw.append(countries_raw_sorted[i])
+                                            break
+                                
+                                if selected_countries_raw:
+                                    filters[country_col] = selected_countries_raw
+                                    active_filters['País'] = selected_countries_display
                 
                 # Filtro de Padrão/Registro
                 if 'standard' in filter_columns:
@@ -854,6 +1018,14 @@ def main():
             except Exception:
                 pass
         
+        # Gráfico de distribuição por país (se houver coluna de país)
+        if 'country' in filter_columns:
+            country_col = filter_columns['country']
+            if country_col in df_filtered.columns:
+                country_chart = create_country_distribution_chart(df_filtered, country_col)
+                if country_chart:
+                    st.plotly_chart(country_chart, use_container_width=True)
+        
         # Gráfico de tendência anual (se aplicável)
         if show_yearly:
             try:
@@ -980,3 +1152,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
