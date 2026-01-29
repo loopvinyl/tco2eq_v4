@@ -24,16 +24,16 @@ st.set_page_config(
 # CONSTANTES E CONFIGURAÇÕES
 # =========================
 SHEET_CONFIG = {
-    "README": {"description": "Documentação e metadados do dataset"},
-    "1. Standards": {"description": "Padrões e registros de carbono", "main_column": "Name of standard/registry/platform"},
-    "2. Platforms": {"description": "Plataformas de mercado de carbono", "main_column": "Platform"},
-    "3. Methodologies": {"description": "Metodologias de cálculo de carbono", "main_column": "Data sourced from methodology document (see reference in column AD)"},
-    "4. Agriculture": {"description": "Projetos agrícolas", "has_yearly_data": True, "credit_column_pattern": "Credits issued by vintage"},
-    "5. Agroforestry-AR & Grassland": {"description": "Projetos agroflorestais e pastagens", "has_yearly_data": True},
-    "6. Energy and Other": {"description": "Projetos de energia e outros", "has_yearly_data": True},
-    "7. Plan Vivo, Acorn, Social C": {"description": "Padrões específicos", "main_column": "Standard"},
-    "8. Puro.earth": {"description": "Projetos Puro.earth", "main_column": "Unnamed: 0"},
-    "9. Nori and BCarbon": {"description": "Projetos Nori e BCarbon", "main_column": "Standard"}
+    "README": {"description": "Documentação e metadados do dataset", "has_filters": False},
+    "1. Standards": {"description": "Padrões e registros de carbono", "main_column": "Name of standard/registry/platform", "has_filters": True},
+    "2. Platforms": {"description": "Plataformas de mercado de carbono", "main_column": "Platform", "has_filters": True},
+    "3. Methodologies": {"description": "Metodologias de cálculo de carbono", "main_column": "Data sourced from methodology document (see reference in column AD)", "has_filters": True},
+    "4. Agriculture": {"description": "Projetos agrícolas", "has_yearly_data": True, "credit_column_pattern": "Credits issued by vintage", "has_filters": True},
+    "5. Agroforestry-AR & Grassland": {"description": "Projetos agroflorestais e pastagens", "has_yearly_data": True, "has_filters": True},
+    "6. Energy and Other": {"description": "Projetos de energia e outros", "has_yearly_data": True, "has_filters": True},
+    "7. Plan Vivo, Acorn, Social C": {"description": "Padrões específicos", "main_column": "Standard", "has_filters": True},
+    "8. Puro.earth": {"description": "Projetos Puro.earth", "main_column": "Unnamed: 0", "has_filters": True},
+    "9. Nori and BCarbon": {"description": "Projetos Nori e BCarbon", "main_column": "Standard", "has_filters": True}
 }
 
 # =========================
@@ -78,30 +78,59 @@ def detect_filter_columns(df, sheet_name):
     """Detecta automaticamente colunas adequadas para filtragem"""
     filter_columns = {}
     
-    if df.empty:
+    if df.empty or sheet_name == "README":
         return filter_columns
     
     # Padrões para diferentes tipos de filtros
     patterns = {
-        'country': ['country', 'país', 'nation', 'location', 'region'],
+        'country': ['country', 'país', 'nation', 'location', 'region', 'country'],
         'standard': ['standard', 'registry', 'platform', 'protocol'],
         'type': ['type', 'tipo', 'category', 'class', 'classification'],
         'methodology': ['methodology', 'method', 'metodologia', 'approach'],
         'year': ['year', 'ano', 'vintage', 'date', 'period'],
-        'credits': ['credit', 'credito', 'volume', 'amount', 'quantity', 'total'],
-        'project': ['project', 'projeto', 'name', 'title', 'id']
+        'credits': ['credit', 'credito', 'volume', 'amount', 'quantity', 'total', 'issued'],
+        'project': ['project', 'projeto', 'name', 'title', 'id'],
+        'sector': ['sector', 'setor', 'industry', 'agriculture', 'agroforestry', 'energy']
     }
     
-    for filter_type, keywords in patterns.items():
+    # Abas específicas têm prioridades diferentes
+    sheet_priority = {
+        "4. Agriculture": ['country', 'type', 'credits', 'year', 'project'],
+        "5. Agroforestry-AR & Grassland": ['country', 'type', 'credits', 'year', 'project'],
+        "6. Energy and Other": ['country', 'type', 'credits', 'year', 'project'],
+        "7. Plan Vivo, Acorn, Social C": ['country', 'standard', 'type', 'credits'],
+        "8. Puro.earth": ['type', 'country', 'credits'],
+        "9. Nori and BCarbon": ['country', 'standard', 'type', 'credits'],
+        "1. Standards": ['standard', 'type'],
+        "2. Platforms": ['platform', 'type'],
+        "3. Methodologies": ['methodology', 'type']
+    }
+    
+    priority_list = sheet_priority.get(sheet_name, list(patterns.keys()))
+    
+    for filter_type in priority_list:
+        if filter_type not in patterns:
+            continue
+            
+        keywords = patterns[filter_type]
         matching_cols = []
+        
         for col in df.columns:
             col_lower = str(col).lower()
             if any(keyword in col_lower for keyword in keywords):
                 # Verifica se a coluna tem dados razoáveis para filtro
                 if not df[col].isna().all():
                     unique_vals = df[col].nunique()
-                    # Não queremos colunas com muitos valores únicos (como IDs)
-                    if 1 < unique_vals < 100:  # Ajustável
+                    total_vals = len(df[col])
+                    
+                    # Critérios para ser um bom filtro
+                    is_good_filter = (
+                        1 < unique_vals < 100 and  # Não muito único, nem muito repetido
+                        total_vals > 5 and  # Tem dados suficientes
+                        df[col].notna().sum() > total_vals * 0.1  # Pelo menos 10% preenchido
+                    )
+                    
+                    if is_good_filter:
                         matching_cols.append((col, unique_vals))
         
         if matching_cols:
@@ -113,22 +142,31 @@ def detect_filter_columns(df, sheet_name):
 
 def apply_filters(df, filters):
     """Aplica filtros ao DataFrame"""
+    if not filters:
+        return df.copy()
+    
     filtered_df = df.copy()
     
-    for filter_type, filter_value in filters.items():
-        if filter_value and filter_type in df.columns:
-            if filter_type in ['year', 'credits'] and isinstance(filter_value, tuple):
-                # Filtro de intervalo
-                min_val, max_val = filter_value
-                if min_val is not None and max_val is not None:
-                    filtered_df = filtered_df[(filtered_df[filter_type] >= min_val) & 
-                                             (filtered_df[filter_type] <= max_val)]
-            elif filter_value != 'Todos':
-                # Filtro de valor único ou múltiplos
-                if isinstance(filter_value, list):
-                    filtered_df = filtered_df[filtered_df[filter_type].isin(filter_value)]
-                else:
-                    filtered_df = filtered_df[filtered_df[filter_type] == filter_value]
+    for filter_col, filter_value in filters.items():
+        if filter_value and filter_col in df.columns:
+            try:
+                if filter_col in ['year', 'credits'] and isinstance(filter_value, tuple):
+                    # Filtro de intervalo numérico
+                    min_val, max_val = filter_value
+                    if min_val is not None and max_val is not None:
+                        filtered_df = filtered_df[
+                            (filtered_df[filter_col] >= min_val) & 
+                            (filtered_df[filter_col] <= max_val)
+                        ]
+                elif isinstance(filter_value, list) and filter_value:
+                    # Filtro de múltiplos valores
+                    filtered_df = filtered_df[filtered_df[filter_col].isin(filter_value)]
+                elif filter_value != 'Todos':
+                    # Filtro de valor único
+                    filtered_df = filtered_df[filtered_df[filter_col] == filter_value]
+            except Exception as e:
+                st.warning(f"Erro ao aplicar filtro na coluna '{filter_col}': {str(e)[:100]}")
+                continue
     
     return filtered_df
 
@@ -283,7 +321,7 @@ def enhanced_smart_insights(df, sheet_name):
     config = SHEET_CONFIG.get(sheet_name, {})
     
     # Insights específicos por tipo de aba
-    if "Agriculture" in sheet_name or "Agroforestry" in sheet_name:
+    if "Agriculture" in sheet_name or "Agroforestry" in sheet_name or "Energy" in sheet_name:
         # Procura por colunas de créditos
         credit_cols = [col for col in df.columns if 'credit' in str(col).lower()]
         if credit_cols:
@@ -508,139 +546,142 @@ def main():
         st.warning(f"A aba '{selected_sheet}' está vazia ou não pôde ser carregada.")
         return
     
-    # Detecta colunas para filtragem
-    filter_columns = detect_filter_columns(df, selected_sheet)
+    # Detecta colunas para filtragem (exceto para README)
+    config = SHEET_CONFIG.get(selected_sheet, {})
+    has_filters = config.get('has_filters', True)
+    
+    if has_filters and selected_sheet != "README":
+        filter_columns = detect_filter_columns(df, selected_sheet)
+    else:
+        filter_columns = {}
     
     # ---------- FILTROS NA SIDEBAR ----------
-    with st.sidebar:
-        st.markdown("---")
-        st.header("🔍 Filtros da Aba")
-        
+    if has_filters and selected_sheet != "README":
+        with st.sidebar:
+            st.markdown("---")
+            st.header("🔍 Filtros da Aba")
+            
+            filters = {}
+            active_filters = {}
+            
+            if filter_columns:
+                # Filtro de País (se detectado)
+                if 'country' in filter_columns:
+                    country_col = filter_columns['country']
+                    if country_col in df.columns:
+                        # Obtém países únicos e ordena
+                        countries = df[country_col].dropna().unique().tolist()
+                        if countries:
+                            countries = ['Todos'] + sorted([str(c) for c in countries])
+                            selected_country = st.selectbox(
+                                "🌍 País:",
+                                countries,
+                                index=0
+                            )
+                            if selected_country != 'Todos':
+                                filters[country_col] = selected_country
+                                active_filters['País'] = selected_country
+                
+                # Filtro de Padrão/Registro
+                if 'standard' in filter_columns:
+                    standard_col = filter_columns['standard']
+                    if standard_col in df.columns:
+                        standards = df[standard_col].dropna().unique().tolist()
+                        if standards:
+                            standards = ['Todos'] + sorted([str(s) for s in standards])
+                            selected_standard = st.selectbox(
+                                "🏛️ Padrão/Registro:",
+                                standards,
+                                index=0
+                            )
+                            if selected_standard != 'Todos':
+                                filters[standard_col] = selected_standard
+                                active_filters['Padrão'] = selected_standard
+                
+                # Filtro de Tipo
+                if 'type' in filter_columns:
+                    type_col = filter_columns['type']
+                    if type_col in df.columns:
+                        types = df[type_col].dropna().unique().tolist()
+                        if types:
+                            types = sorted([str(t) for t in types])
+                            selected_types = st.multiselect(
+                                "📋 Tipo(s):",
+                                types,
+                                default=[]
+                            )
+                            if selected_types:
+                                filters[type_col] = selected_types
+                                active_filters['Tipo'] = selected_types
+                
+                # Filtro de Ano (intervalo) - apenas para abas com dados anuais
+                if 'year' in filter_columns and config.get('has_yearly_data', False):
+                    year_col = filter_columns['year']
+                    if year_col in df.columns and pd.api.types.is_numeric_dtype(df[year_col]):
+                        year_data = df[year_col].dropna()
+                        if not year_data.empty:
+                            min_year = int(year_data.min())
+                            max_year = int(year_data.max())
+                            year_range = st.slider(
+                                "📅 Intervalo de Anos:",
+                                min_value=min_year,
+                                max_value=max_year,
+                                value=(min_year, max_year)
+                            )
+                            if year_range != (min_year, max_year):
+                                filters[year_col] = year_range
+                                active_filters['Ano'] = year_range
+                
+                # Filtro de Créditos (intervalo)
+                if 'credits' in filter_columns:
+                    credit_col = filter_columns['credits']
+                    if credit_col in df.columns and pd.api.types.is_numeric_dtype(df[credit_col]):
+                        credit_data = df[credit_col].dropna()
+                        if not credit_data.empty:
+                            min_credit = float(credit_data.min())
+                            max_credit = float(credit_data.max())
+                            
+                            # Se houver muita variação, usar escala logarítmica
+                            if max_credit / min_credit > 1000 and min_credit > 0:
+                                min_credit = float(np.log10(min_credit))
+                                max_credit = float(np.log10(max_credit))
+                                credit_range = st.slider(
+                                    "💰 Intervalo de Créditos (escala log):",
+                                    min_value=min_credit,
+                                    max_value=max_credit,
+                                    value=(min_credit, max_credit),
+                                    step=0.1
+                                )
+                                credit_range = (10**credit_range[0], 10**credit_range[1])
+                            else:
+                                credit_range = st.slider(
+                                    "💰 Intervalo de Créditos:",
+                                    min_value=min_credit,
+                                    max_value=max_credit,
+                                    value=(min_credit, max_credit)
+                                )
+                            
+                            if credit_range != (min_credit, max_credit):
+                                filters[credit_col] = credit_range
+                                active_filters['Créditos'] = credit_range
+                
+                # Botão para limpar filtros
+                if filters:
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("🧹 Limpar Filtros", use_container_width=True):
+                            st.session_state['filters'] = {}
+                            st.rerun()
+                    with col2:
+                        if st.button("💾 Salvar Filtros", use_container_width=True):
+                            st.session_state['saved_filters'] = filters
+                            st.success("Filtros salvos!")
+            
+            else:
+                st.info("ℹ️ Não foram detectadas colunas adequadas para filtragem nesta aba.")
+    else:
         filters = {}
         active_filters = {}
-        
-        if filter_columns:
-            # Filtro de País (se detectado)
-            if 'country' in filter_columns:
-                country_col = filter_columns['country']
-                if country_col in df.columns:
-                    countries = ['Todos'] + sorted(df[country_col].dropna().unique().tolist())
-                    selected_country = st.selectbox(
-                        "🌍 País:",
-                        countries,
-                        index=0
-                    )
-                    if selected_country != 'Todos':
-                        filters[country_col] = selected_country
-                        active_filters['País'] = selected_country
-            
-            # Filtro de Padrão/Registro
-            if 'standard' in filter_columns:
-                standard_col = filter_columns['standard']
-                if standard_col in df.columns:
-                    standards = ['Todos'] + sorted(df[standard_col].dropna().unique().tolist())
-                    selected_standard = st.selectbox(
-                        "🏛️ Padrão/Registro:",
-                        standards,
-                        index=0
-                    )
-                    if selected_standard != 'Todos':
-                        filters[standard_col] = selected_standard
-                        active_filters['Padrão'] = selected_standard
-            
-            # Filtro de Tipo
-            if 'type' in filter_columns:
-                type_col = filter_columns['type']
-                if type_col in df.columns:
-                    types = ['Todos'] + sorted(df[type_col].dropna().unique().tolist())
-                    selected_type = st.multiselect(
-                        "📋 Tipo(s):",
-                        types[1:],  # Exclui 'Todos'
-                        default=[]
-                    )
-                    if selected_type:
-                        filters[type_col] = selected_type
-                        active_filters['Tipo'] = selected_type
-            
-            # Filtro de Ano (intervalo)
-            if 'year' in filter_columns:
-                year_col = filter_columns['year']
-                if year_col in df.columns and pd.api.types.is_numeric_dtype(df[year_col]):
-                    year_data = df[year_col].dropna()
-                    if not year_data.empty:
-                        min_year = int(year_data.min())
-                        max_year = int(year_data.max())
-                        year_range = st.slider(
-                            "📅 Intervalo de Anos:",
-                            min_value=min_year,
-                            max_value=max_year,
-                            value=(min_year, max_year)
-                        )
-                        if year_range != (min_year, max_year):
-                            filters[year_col] = year_range
-                            active_filters['Ano'] = year_range
-            
-            # Filtro de Créditos (intervalo)
-            if 'credits' in filter_columns:
-                credit_col = filter_columns['credits']
-                if credit_col in df.columns and pd.api.types.is_numeric_dtype(df[credit_col]):
-                    credit_data = df[credit_col].dropna()
-                    if not credit_data.empty:
-                        min_credit = float(credit_data.min())
-                        max_credit = float(credit_data.max())
-                        
-                        # Se houver muita variação, usar escala logarítmica
-                        if max_credit / min_credit > 1000 and min_credit > 0:
-                            min_credit = float(np.log10(min_credit))
-                            max_credit = float(np.log10(max_credit))
-                            credit_range = st.slider(
-                                "💰 Intervalo de Créditos (escala log):",
-                                min_value=min_credit,
-                                max_value=max_credit,
-                                value=(min_credit, max_credit),
-                                step=0.1
-                            )
-                            credit_range = (10**credit_range[0], 10**credit_range[1])
-                        else:
-                            credit_range = st.slider(
-                                "💰 Intervalo de Créditos:",
-                                min_value=min_credit,
-                                max_value=max_credit,
-                                value=(min_credit, max_credit)
-                            )
-                        
-                        if credit_range != (min_credit, max_credit):
-                            filters[credit_col] = credit_range
-                            active_filters['Créditos'] = credit_range
-            
-            # Filtro de Metodologia (para abas específicas)
-            if 'methodology' in filter_columns and "Methodologies" in selected_sheet:
-                method_col = filter_columns['methodology']
-                if method_col in df.columns:
-                    methodologies = ['Todos'] + sorted(df[method_col].dropna().unique().tolist())
-                    selected_methodology = st.selectbox(
-                        "🔬 Metodologia:",
-                        methodologies,
-                        index=0
-                    )
-                    if selected_methodology != 'Todos':
-                        filters[method_col] = selected_methodology
-                        active_filters['Metodologia'] = selected_methodology
-            
-            # Botão para limpar filtros
-            if filters:
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("🧹 Limpar Filtros", use_container_width=True):
-                        filters = {}
-                        st.rerun()
-                with col2:
-                    if st.button("💾 Salvar Filtros", use_container_width=True):
-                        st.session_state['saved_filters'] = filters
-                        st.success("Filtros salvos!")
-        
-        else:
-            st.info("ℹ️ Não foram detectadas colunas adequadas para filtragem nesta aba.")
     
     # ---------- APLICA FILTROS ----------
     if filters:
@@ -684,13 +725,13 @@ def main():
         if summary_data:
             st.dataframe(pd.DataFrame(summary_data), use_container_width=True, height=300)
     
-    # ---------- CABEÇALHO DA ABA COM FILTROS ----------
+    # ---------- CABEÇALHO DA ABA ----------
     st.divider()
     st.header(f"📄 {selected_sheet}")
     st.caption(SHEET_CONFIG.get(selected_sheet, {}).get("description", ""))
     
     # Mostra métricas de filtro se aplicável
-    if filters:
+    if has_filters and selected_sheet != "README" and filters:
         create_filter_metrics(df_filtered, df, active_filters)
         st.markdown("---")
     
