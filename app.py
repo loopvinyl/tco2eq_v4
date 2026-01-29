@@ -74,6 +74,64 @@ def make_column_names_unique(columns):
     
     return unique_cols
 
+def detect_filter_columns(df, sheet_name):
+    """Detecta automaticamente colunas adequadas para filtragem"""
+    filter_columns = {}
+    
+    if df.empty:
+        return filter_columns
+    
+    # Padrões para diferentes tipos de filtros
+    patterns = {
+        'country': ['country', 'país', 'nation', 'location', 'region'],
+        'standard': ['standard', 'registry', 'platform', 'protocol'],
+        'type': ['type', 'tipo', 'category', 'class', 'classification'],
+        'methodology': ['methodology', 'method', 'metodologia', 'approach'],
+        'year': ['year', 'ano', 'vintage', 'date', 'period'],
+        'credits': ['credit', 'credito', 'volume', 'amount', 'quantity', 'total'],
+        'project': ['project', 'projeto', 'name', 'title', 'id']
+    }
+    
+    for filter_type, keywords in patterns.items():
+        matching_cols = []
+        for col in df.columns:
+            col_lower = str(col).lower()
+            if any(keyword in col_lower for keyword in keywords):
+                # Verifica se a coluna tem dados razoáveis para filtro
+                if not df[col].isna().all():
+                    unique_vals = df[col].nunique()
+                    # Não queremos colunas com muitos valores únicos (como IDs)
+                    if 1 < unique_vals < 100:  # Ajustável
+                        matching_cols.append((col, unique_vals))
+        
+        if matching_cols:
+            # Ordena pelo número de valores únicos (menos é melhor para filtros)
+            matching_cols.sort(key=lambda x: x[1])
+            filter_columns[filter_type] = matching_cols[0][0]
+    
+    return filter_columns
+
+def apply_filters(df, filters):
+    """Aplica filtros ao DataFrame"""
+    filtered_df = df.copy()
+    
+    for filter_type, filter_value in filters.items():
+        if filter_value and filter_type in df.columns:
+            if filter_type in ['year', 'credits'] and isinstance(filter_value, tuple):
+                # Filtro de intervalo
+                min_val, max_val = filter_value
+                if min_val is not None and max_val is not None:
+                    filtered_df = filtered_df[(filtered_df[filter_type] >= min_val) & 
+                                             (filtered_df[filter_type] <= max_val)]
+            elif filter_value != 'Todos':
+                # Filtro de valor único ou múltiplos
+                if isinstance(filter_value, list):
+                    filtered_df = filtered_df[filtered_df[filter_type].isin(filter_value)]
+                else:
+                    filtered_df = filtered_df[filtered_df[filter_type] == filter_value]
+    
+    return filtered_df
+
 # =========================
 # LOAD DO EXCEL LOCAL (GITHUB)
 # =========================
@@ -213,27 +271,6 @@ def extract_yearly_data(df, sheet_name):
                 continue
     
     return yearly_data
-
-def create_projects_summary(df, sheet_name):
-    """Cria um resumo dos projetos baseado na estrutura da aba"""
-    summary = {}
-    
-    if sheet_name in ["4. Agriculture", "5. Agroforestry-AR & Grassland", "6. Energy and Other"]:
-        # Identifica coluna de nome do projeto
-        project_cols = [col for col in df.columns if 'name' in str(col).lower() or 'project' in str(col).lower()]
-        
-        if project_cols and not df.empty:
-            project_col = project_cols[0]
-            summary['total_projects'] = df[project_col].nunique()
-            summary['sample_projects'] = df[project_col].dropna().unique()[:5].tolist()
-            
-            # Tenta identificar coluna de padrão/registro
-            registry_cols = [col for col in df.columns if 'registry' in str(col).lower() or 'standard' in str(col).lower()]
-            if registry_cols:
-                registry_col = registry_cols[0]
-                summary['registries'] = df[registry_col].value_counts().head().to_dict()
-    
-    return summary
 
 def enhanced_smart_insights(df, sheet_name):
     """Insights avançados baseados na estrutura específica de cada aba"""
@@ -393,6 +430,38 @@ def create_project_distribution_chart(df, sheet_name):
     
     return None
 
+def create_filter_metrics(df_filtered, df_original, active_filters):
+    """Cria métricas de filtro aplicado"""
+    if df_filtered.empty or df_original.empty:
+        return None
+    
+    total_original = len(df_original)
+    total_filtered = len(df_filtered)
+    reduction_pct = ((total_original - total_filtered) / total_original * 100) if total_original > 0 else 0
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("📊 Registros Totais", f"{total_original:,}")
+    with col2:
+        st.metric("🔍 Registros Filtrados", f"{total_filtered:,}", 
+                 delta=f"-{reduction_pct:.1f}%" if reduction_pct > 0 else None)
+    with col3:
+        active_count = sum(1 for v in active_filters.values() if v and v != 'Todos')
+        st.metric("⚙️ Filtros Ativos", active_count)
+    
+    if active_filters:
+        with st.expander("📋 Filtros Aplicados", expanded=False):
+            for filter_name, filter_value in active_filters.items():
+                if filter_value and filter_value != 'Todos':
+                    if isinstance(filter_value, tuple):
+                        st.write(f"**{filter_name}**: {filter_value[0]} a {filter_value[1]}")
+                    elif isinstance(filter_value, list):
+                        st.write(f"**{filter_name}**: {', '.join(map(str, filter_value[:3]))}")
+                        if len(filter_value) > 3:
+                            st.write(f"... e mais {len(filter_value) - 3} valores")
+                    else:
+                        st.write(f"**{filter_name}**: {filter_value}")
+
 # =========================
 # APP PRINCIPAL
 # =========================
@@ -428,9 +497,156 @@ def main():
         show_yearly = st.toggle("📅 Dados Temporais", False)
         
         st.markdown("---")
-        st.header("⚙️ Configurações")
+        st.header("⚙️ Configurações de Visualização")
         
         max_rows = st.slider("Máximo de linhas para visualizar:", 10, 500, 100)
+    
+    # ---------- ABA SELECIONADA ----------
+    df = dataframes[selected_sheet]
+    
+    if df.empty:
+        st.warning(f"A aba '{selected_sheet}' está vazia ou não pôde ser carregada.")
+        return
+    
+    # Detecta colunas para filtragem
+    filter_columns = detect_filter_columns(df, selected_sheet)
+    
+    # ---------- FILTROS NA SIDEBAR ----------
+    with st.sidebar:
+        st.markdown("---")
+        st.header("🔍 Filtros da Aba")
+        
+        filters = {}
+        active_filters = {}
+        
+        if filter_columns:
+            # Filtro de País (se detectado)
+            if 'country' in filter_columns:
+                country_col = filter_columns['country']
+                if country_col in df.columns:
+                    countries = ['Todos'] + sorted(df[country_col].dropna().unique().tolist())
+                    selected_country = st.selectbox(
+                        "🌍 País:",
+                        countries,
+                        index=0
+                    )
+                    if selected_country != 'Todos':
+                        filters[country_col] = selected_country
+                        active_filters['País'] = selected_country
+            
+            # Filtro de Padrão/Registro
+            if 'standard' in filter_columns:
+                standard_col = filter_columns['standard']
+                if standard_col in df.columns:
+                    standards = ['Todos'] + sorted(df[standard_col].dropna().unique().tolist())
+                    selected_standard = st.selectbox(
+                        "🏛️ Padrão/Registro:",
+                        standards,
+                        index=0
+                    )
+                    if selected_standard != 'Todos':
+                        filters[standard_col] = selected_standard
+                        active_filters['Padrão'] = selected_standard
+            
+            # Filtro de Tipo
+            if 'type' in filter_columns:
+                type_col = filter_columns['type']
+                if type_col in df.columns:
+                    types = ['Todos'] + sorted(df[type_col].dropna().unique().tolist())
+                    selected_type = st.multiselect(
+                        "📋 Tipo(s):",
+                        types[1:],  # Exclui 'Todos'
+                        default=[]
+                    )
+                    if selected_type:
+                        filters[type_col] = selected_type
+                        active_filters['Tipo'] = selected_type
+            
+            # Filtro de Ano (intervalo)
+            if 'year' in filter_columns:
+                year_col = filter_columns['year']
+                if year_col in df.columns and pd.api.types.is_numeric_dtype(df[year_col]):
+                    year_data = df[year_col].dropna()
+                    if not year_data.empty:
+                        min_year = int(year_data.min())
+                        max_year = int(year_data.max())
+                        year_range = st.slider(
+                            "📅 Intervalo de Anos:",
+                            min_value=min_year,
+                            max_value=max_year,
+                            value=(min_year, max_year)
+                        )
+                        if year_range != (min_year, max_year):
+                            filters[year_col] = year_range
+                            active_filters['Ano'] = year_range
+            
+            # Filtro de Créditos (intervalo)
+            if 'credits' in filter_columns:
+                credit_col = filter_columns['credits']
+                if credit_col in df.columns and pd.api.types.is_numeric_dtype(df[credit_col]):
+                    credit_data = df[credit_col].dropna()
+                    if not credit_data.empty:
+                        min_credit = float(credit_data.min())
+                        max_credit = float(credit_data.max())
+                        
+                        # Se houver muita variação, usar escala logarítmica
+                        if max_credit / min_credit > 1000 and min_credit > 0:
+                            min_credit = float(np.log10(min_credit))
+                            max_credit = float(np.log10(max_credit))
+                            credit_range = st.slider(
+                                "💰 Intervalo de Créditos (escala log):",
+                                min_value=min_credit,
+                                max_value=max_credit,
+                                value=(min_credit, max_credit),
+                                step=0.1
+                            )
+                            credit_range = (10**credit_range[0], 10**credit_range[1])
+                        else:
+                            credit_range = st.slider(
+                                "💰 Intervalo de Créditos:",
+                                min_value=min_credit,
+                                max_value=max_credit,
+                                value=(min_credit, max_credit)
+                            )
+                        
+                        if credit_range != (min_credit, max_credit):
+                            filters[credit_col] = credit_range
+                            active_filters['Créditos'] = credit_range
+            
+            # Filtro de Metodologia (para abas específicas)
+            if 'methodology' in filter_columns and "Methodologies" in selected_sheet:
+                method_col = filter_columns['methodology']
+                if method_col in df.columns:
+                    methodologies = ['Todos'] + sorted(df[method_col].dropna().unique().tolist())
+                    selected_methodology = st.selectbox(
+                        "🔬 Metodologia:",
+                        methodologies,
+                        index=0
+                    )
+                    if selected_methodology != 'Todos':
+                        filters[method_col] = selected_methodology
+                        active_filters['Metodologia'] = selected_methodology
+            
+            # Botão para limpar filtros
+            if filters:
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("🧹 Limpar Filtros", use_container_width=True):
+                        filters = {}
+                        st.rerun()
+                with col2:
+                    if st.button("💾 Salvar Filtros", use_container_width=True):
+                        st.session_state['saved_filters'] = filters
+                        st.success("Filtros salvos!")
+        
+        else:
+            st.info("ℹ️ Não foram detectadas colunas adequadas para filtragem nesta aba.")
+    
+    # ---------- APLICA FILTROS ----------
+    if filters:
+        df_filtered = apply_filters(df, filters)
+    else:
+        df_filtered = df.copy()
     
     # ---------- VISÃO GERAL ----------
     if show_summary:
@@ -449,16 +665,16 @@ def main():
         
         # Tabela de resumo por aba
         summary_data = []
-        for name, df in dataframes.items():
-            if not df.empty:
-                numeric_cols = len(df.select_dtypes(include=[np.number]).columns)
-                missing_percent = df.isnull().mean().mean() * 100
-                memory_mb = df.memory_usage(deep=True).sum() / 1024 / 1024
+        for name, df_sheet in dataframes.items():
+            if not df_sheet.empty:
+                numeric_cols = len(df_sheet.select_dtypes(include=[np.number]).columns)
+                missing_percent = df_sheet.isnull().mean().mean() * 100
+                memory_mb = df_sheet.memory_usage(deep=True).sum() / 1024 / 1024
                 
                 summary_data.append({
                     "Aba": name,
-                    "Linhas": df.shape[0],
-                    "Colunas": df.shape[1],
+                    "Linhas": df_sheet.shape[0],
+                    "Colunas": df_sheet.shape[1],
                     "Numéricas": numeric_cols,
                     "% Nulos": f"{missing_percent:.1f}%",
                     "Memória (MB)": f"{memory_mb:.1f}",
@@ -468,27 +684,26 @@ def main():
         if summary_data:
             st.dataframe(pd.DataFrame(summary_data), use_container_width=True, height=300)
     
-    # ---------- ABA SELECIONADA ----------
-    df = dataframes[selected_sheet]
-    
-    if df.empty:
-        st.warning(f"A aba '{selected_sheet}' está vazia ou não pôde ser carregada.")
-        return
-    
+    # ---------- CABEÇALHO DA ABA COM FILTROS ----------
     st.divider()
     st.header(f"📄 {selected_sheet}")
     st.caption(SHEET_CONFIG.get(selected_sheet, {}).get("description", ""))
+    
+    # Mostra métricas de filtro se aplicável
+    if filters:
+        create_filter_metrics(df_filtered, df, active_filters)
+        st.markdown("---")
     
     # Insights avançados
     if show_insights:
         with st.expander("🧠 Insights Inteligentes", expanded=True):
             try:
-                insights = enhanced_smart_insights(df, selected_sheet)
+                insights = enhanced_smart_insights(df_filtered, selected_sheet)
                 for insight in insights:
                     st.write(f"• {insight}")
                 
                 # Análise de estrutura
-                structure_insights = analyze_sheet_structure(df, selected_sheet)
+                structure_insights = analyze_sheet_structure(df_filtered, selected_sheet)
                 if structure_insights:
                     st.markdown("---")
                     st.markdown("**Análise de Estrutura:**")
@@ -507,7 +722,7 @@ def main():
         col_filter1, col_filter2 = st.columns(2)
         with col_filter1:
             # Filtra colunas problemáticas
-            available_columns = [col for col in df.columns if not pd.isna(col) and str(col).strip() != '']
+            available_columns = [col for col in df_filtered.columns if not pd.isna(col) and str(col).strip() != '']
             
             show_columns = st.multiselect(
                 "Selecionar colunas:",
@@ -516,35 +731,35 @@ def main():
             )
         
         with col_filter2:
-            if len(df) > 100:
-                n_rows = st.slider("Número de linhas:", 10, min(500, len(df)), 100)
+            if len(df_filtered) > 100:
+                n_rows = st.slider("Número de linhas:", 10, min(500, len(df_filtered)), 100)
             else:
-                n_rows = len(df)
+                n_rows = len(df_filtered)
         
         # Dataframe filtrado
         try:
             if show_columns:
-                filtered_df = df[show_columns].head(n_rows)
+                display_df = df_filtered[show_columns].head(n_rows)
             else:
-                filtered_df = df.head(n_rows)
+                display_df = df_filtered.head(n_rows)
             
             # Exibe o dataframe com tratamento de erros
-            st.dataframe(filtered_df, use_container_width=True, height=400)
+            st.dataframe(display_df, use_container_width=True, height=400)
         except Exception as e:
             st.error(f"Erro ao exibir dados: {str(e)[:200]}")
             # Tenta exibir as primeiras colunas como fallback
             try:
-                fallback_cols = df.columns[:5].tolist()
-                st.dataframe(df[fallback_cols].head(n_rows), use_container_width=True, height=400)
+                fallback_cols = df_filtered.columns[:5].tolist()
+                st.dataframe(df_filtered[fallback_cols].head(n_rows), use_container_width=True, height=400)
             except:
-                st.dataframe(df.head(n_rows), use_container_width=True, height=400)
+                st.dataframe(df_filtered.head(n_rows), use_container_width=True, height=400)
         
         # Estatísticas rápidas
         with st.expander("📊 Estatísticas Descritivas"):
             try:
-                numeric_cols = df.select_dtypes(include=[np.number]).columns
+                numeric_cols = df_filtered.select_dtypes(include=[np.number]).columns
                 if len(numeric_cols) > 0:
-                    st.dataframe(df[numeric_cols].describe().round(2), use_container_width=True)
+                    st.dataframe(df_filtered[numeric_cols].describe().round(2), use_container_width=True)
                 else:
                     st.info("Nenhuma coluna numérica para estatísticas.")
             except Exception:
@@ -558,13 +773,13 @@ def main():
         with viz_col1:
             # Gráfico 1: Distribuição de valores numéricos
             try:
-                numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+                numeric_cols = df_filtered.select_dtypes(include=[np.number]).columns.tolist()
                 if numeric_cols:
                     selected_num_col = st.selectbox("Selecione coluna numérica:", numeric_cols)
                     
-                    if pd.api.types.is_numeric_dtype(df[selected_num_col]):
+                    if pd.api.types.is_numeric_dtype(df_filtered[selected_num_col]):
                         fig = px.histogram(
-                            df, 
+                            df_filtered, 
                             x=selected_num_col,
                             title=f"Distribuição de {selected_num_col[:30]}..." if len(selected_num_col) > 30 else f"Distribuição de {selected_num_col}",
                             nbins=30,
@@ -582,7 +797,7 @@ def main():
             # Gráfico 2: Qualidade dos dados
             if show_quality:
                 try:
-                    quality_fig = create_data_quality_chart(df)
+                    quality_fig = create_data_quality_chart(df_filtered)
                     if quality_fig:
                         st.plotly_chart(quality_fig, use_container_width=True)
                     else:
@@ -592,7 +807,7 @@ def main():
             
             # Gráfico 3: Distribuição de projetos
             try:
-                project_fig = create_project_distribution_chart(df, selected_sheet)
+                project_fig = create_project_distribution_chart(df_filtered, selected_sheet)
                 if project_fig:
                     st.plotly_chart(project_fig, use_container_width=True)
             except Exception:
@@ -601,7 +816,7 @@ def main():
         # Gráfico de tendência anual (se aplicável)
         if show_yearly:
             try:
-                yearly_data = extract_yearly_data(df, selected_sheet)
+                yearly_data = extract_yearly_data(df_filtered, selected_sheet)
                 if yearly_data:
                     trend_fig = create_yearly_trend_chart(yearly_data)
                     if trend_fig:
@@ -619,7 +834,7 @@ def main():
         
         if analysis_type == "Correlações":
             try:
-                numeric_df = df.select_dtypes(include=[np.number])
+                numeric_df = df_filtered.select_dtypes(include=[np.number])
                 if numeric_df.shape[1] >= 2:
                     corr_matrix = numeric_df.corr()
                     
@@ -649,9 +864,9 @@ def main():
         elif analysis_type == "Valores Ausentes":
             try:
                 missing_df = pd.DataFrame({
-                    'Coluna': df.columns,
-                    '% Ausente': (df.isnull().mean() * 100).round(2),
-                    'Total Ausente': df.isnull().sum()
+                    'Coluna': df_filtered.columns,
+                    '% Ausente': (df_filtered.isnull().mean() * 100).round(2),
+                    'Total Ausente': df_filtered.isnull().sum()
                 }).sort_values('% Ausente', ascending=False)
                 
                 st.dataframe(missing_df, use_container_width=True, height=400)
@@ -673,9 +888,9 @@ def main():
             try:
                 # Distribuição de valores únicos
                 unique_counts = pd.DataFrame({
-                    'Coluna': df.columns,
-                    'Valores Únicos': df.nunique(),
-                    'Tipo': df.dtypes.astype(str)
+                    'Coluna': df_filtered.columns,
+                    'Valores Únicos': df_filtered.nunique(),
+                    'Tipo': df_filtered.dtypes.astype(str)
                 }).sort_values('Valores Únicos', ascending=False)
                 
                 st.dataframe(unique_counts, use_container_width=True, height=400)
@@ -688,19 +903,19 @@ def main():
                 buffer = []
                 
                 buffer.append(f"### 📋 Sumário da Aba: {selected_sheet}")
-                buffer.append(f"- **Dimensões**: {df.shape[0]} linhas × {df.shape[1]} colunas")
+                buffer.append(f"- **Dimensões**: {df_filtered.shape[0]} linhas × {df_filtered.shape[1]} colunas")
                 
                 # Tipos de dados
-                dtype_counts = df.dtypes.value_counts()
+                dtype_counts = df_filtered.dtypes.value_counts()
                 buffer.append("\n**Tipos de dados:**")
                 for dtype, count in dtype_counts.items():
                     buffer.append(f"  - {dtype}: {count} colunas")
                 
                 # Colunas com mais dados
-                complete_cols = df.notna().sum().sort_values(ascending=False).head(5)
+                complete_cols = df_filtered.notna().sum().sort_values(ascending=False).head(5)
                 buffer.append("\n**Colunas mais completas:**")
                 for col, count in complete_cols.items():
-                    percent = (count / len(df)) * 100
+                    percent = (count / len(df_filtered)) * 100
                     buffer.append(f"  - {col}: {count} valores ({percent:.1f}%)")
                 
                 # Exibe o sumário
@@ -717,7 +932,7 @@ def main():
         st.caption(f"📅 Última atualização: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
     
     with footer_col2:
-        st.caption(f"📊 Dados carregados: {len(dataframes)} abas, {df.shape[0]:,} registros")
+        st.caption(f"📊 Dados carregados: {len(dataframes)} abas, {df_filtered.shape[0]:,} registros")
     
     with footer_col3:
         st.caption("🌍 FAO Agrifood Carbon Market Dataset v1.0")
