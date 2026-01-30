@@ -39,14 +39,11 @@ def formatar_br(numero):
     if pd.isna(numero):
         return "N/A"
     
-    try:
-        # Arredonda para 2 casas decimais
-        numero = round(float(numero), 2)
-        
-        # Formata como string e substitui o ponto pela vírgula
-        return f"{numero:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    except:
-        return str(numero)
+    # Arredonda para 2 casas decimais
+    numero = round(numero, 2)
+    
+    # Formata como string e substitui o ponto pela vírgula
+    return f"{numero:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 def formatar_br_dec(numero, decimais=2):
     """
@@ -55,14 +52,11 @@ def formatar_br_dec(numero, decimais=2):
     if pd.isna(numero):
         return "N/A"
     
-    try:
-        # Arredonda para o número de casas decimais especificado
-        numero = round(float(numero), decimais)
-        
-        # Formata como string e substitui o ponto pela vírgula
-        return f"{numero:,.{decimais}f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    except:
-        return str(numero)
+    # Arredonda para o número de casas decimais especificado
+    numero = round(numero, decimais)
+    
+    # Formata como string e substitui o ponto pela vírgula
+    return f"{numero:,.{decimais}f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 def formatar_br_inteiro(numero):
     """
@@ -71,14 +65,11 @@ def formatar_br_inteiro(numero):
     if pd.isna(numero):
         return "N/A"
     
-    try:
-        # Arredonda para inteiro
-        numero = int(round(float(numero), 0))
-        
-        # Formata como string
-        return f"{numero:,}".replace(",", "X").replace(".", ",").replace("X", ".")
-    except:
-        return str(numero)
+    # Arredonda para inteiro
+    numero = int(round(numero, 0))
+    
+    # Formata como string
+    return f"{numero:,}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 def formatar_br_float(numero, casas_decimais=1):
     """
@@ -87,49 +78,9 @@ def formatar_br_float(numero, casas_decimais=1):
     if pd.isna(numero):
         return "N/A"
     
-    try:
-        # Formata com número específico de casas decimais
-        numero = float(numero)
-        format_str = f"{{:,.{casas_decimais}f}}"
-        return format_str.format(numero).replace(",", "X").replace(".", ",").replace("X", ".")
-    except:
-        return str(numero)
-
-def formatar_dataframe_br(df):
-    """
-    Formata todas as colunas numéricas de um dataframe no padrão brasileiro
-    """
-    df_formatado = df.copy()
-    
-    for col in df_formatado.columns:
-        try:
-            # Tentar converter para numérico
-            numeric_series = pd.to_numeric(df_formatado[col], errors='coerce')
-            if numeric_series.notna().any():
-                # Verificar se é inteiro
-                if all(x == int(x) for x in numeric_series.dropna() if pd.notna(x) and not np.isinf(x)):
-                    df_formatado[col] = numeric_series.apply(lambda x: formatar_br_inteiro(x) if pd.notna(x) else x)
-                else:
-                    # Verificar se precisa de 2 ou mais casas decimais
-                    # Analisar os valores para determinar casas decimais
-                    valores = numeric_series.dropna()
-                    if len(valores) > 0:
-                        # Verificar se tem valores com mais de 2 casas decimais
-                        max_decimais = 0
-                        for val in valores:
-                            if not np.isinf(val):
-                                partes = str(val).split('.')
-                                if len(partes) > 1:
-                                    max_decimais = max(max_decimais, len(partes[1]))
-                        
-                        decimais = min(2, max_decimais)
-                        df_formatado[col] = numeric_series.apply(lambda x: formatar_br_dec(x, decimais) if pd.notna(x) else x)
-                    else:
-                        df_formatado[col] = numeric_series.apply(lambda x: formatar_br(x) if pd.notna(x) else x)
-        except:
-            pass
-    
-    return df_formatado
+    # Formata com número específico de casas decimais
+    format_str = f"{{:,.{casas_decimais}f}}"
+    return format_str.format(numero).replace(",", "X").replace(".", ",").replace("X", ".")
 
 # =========================
 # CONSTANTES E CONFIGURAÇÕES
@@ -828,17 +779,6 @@ def render_project_explorer(dataframes, sheet_names, analysis):
             format_func=lambda x: f"{SHEET_CONFIG.get(x, {}).get('icon', '📄')} {x}"
         )
         
-        # Opções para ajustar cabeçalho
-        st.markdown("---")
-        st.markdown("### ⚙️ Ajustes de Cabeçalho")
-        
-        header_option = st.radio(
-            "Tratamento do cabeçalho:",
-            ["Auto (recomendado)", "Primeira linha como cabeçalho", "Sem cabeçalho (gerar automático)"],
-            index=0,
-            help="Ajuste como os nomes das colunas são interpretados"
-        )
-        
         # Filtro por país baseado em dados reais
         st.markdown("---")
         st.markdown("### 🌍 Filtrar por País")
@@ -870,56 +810,6 @@ def render_project_explorer(dataframes, sheet_names, analysis):
         df = dataframes[selected_sheet]
         config = SHEET_CONFIG.get(selected_sheet, {})
         
-        # AJUSTAR CABEÇALHO CONFORME OPÇÃO SELECIONADA
-        if header_option == "Primeira linha como cabeçalho":
-            # Se a primeira linha parece ser cabeçalho (não tem números na primeira linha)
-            if len(df) > 0:
-                first_row = df.iloc[0]
-                numeric_count = 0
-                total_count = 0
-                
-                for value in first_row:
-                    try:
-                        float(str(value))
-                        numeric_count += 1
-                    except:
-                        pass
-                    total_count += 1
-                
-                # Se menos de 30% da primeira linha são números, usar como cabeçalho
-                if total_count > 0 and (numeric_count / total_count) < 0.3:
-                    df.columns = df.iloc[0]  # Primeira linha vira cabeçalho
-                    df = df[1:].reset_index(drop=True)
-                    st.success("✅ Primeira linha definida como cabeçalho das colunas")
-                else:
-                    st.warning("⚠️ Primeira linha contém muitos números, mantendo estrutura atual")
-            else:
-                st.warning("⚠️ Dataframe vazio, não é possível ajustar cabeçalho")
-                
-        elif header_option == "Sem cabeçalho (gerar automático)":
-            if len(df) > 0:
-                # Verificar se a primeira linha parece ser cabeçalho
-                first_row = df.iloc[0]
-                has_header_like = False
-                
-                for value in first_row:
-                    val_str = str(value).lower()
-                    if any(keyword in val_str for keyword in ['name', 'project', 'country', 'credit', 'area']):
-                        has_header_like = True
-                        break
-                
-                if has_header_like:
-                    df.columns = df.iloc[0]  # Primeira linha vira cabeçalho
-                    df = df[1:].reset_index(drop=True)
-                    st.success("✅ Primeira linha usada como cabeçalho")
-                else:
-                    # Gerar nomes genéricos para colunas
-                    new_columns = [f"Coluna {i+1}" for i in range(len(df.columns))]
-                    df.columns = new_columns
-                    st.info("ℹ️ Gerados nomes genéricos para colunas")
-            else:
-                st.warning("⚠️ Dataframe vazio, não é possível ajustar cabeçalho")
-        
         # Aplicar filtros
         filtered_df = df.copy()
         
@@ -935,178 +825,40 @@ def render_project_explorer(dataframes, sheet_names, analysis):
         st.markdown(f"### {config.get('icon', '📊')} {selected_sheet}")
         st.markdown(f"**{formatar_br_inteiro(len(filtered_df))} projetos encontrados** • Dados extraídos do dataset FAO")
         
-        # Mostrar informações sobre as colunas
-        with st.expander("📋 Ver informações das colunas"):
-            col_info = []
-            for i, col in enumerate(filtered_df.columns):
-                sample_value = ""
-                if not filtered_df.empty and len(filtered_df) > 0:
-                    non_na_values = filtered_df[col].dropna()
-                    if len(non_na_values) > 0:
-                        sample_value = str(non_na_values.iloc[0])[:50] + ("..." if len(str(non_na_values.iloc[0])) > 50 else "")
-                
-                col_info.append({
-                    "Nº": i+1,
-                    "Nome da Coluna": str(col),
-                    "Tipo": str(filtered_df[col].dtype),
-                    "Valores Não Nulos": formatar_br_inteiro(filtered_df[col].notna().sum()),
-                    "Exemplo": sample_value
-                })
-            
-            col_info_df = pd.DataFrame(col_info)
-            col_info_df_formatado = formatar_dataframe_br(col_info_df)
-            st.dataframe(col_info_df_formatado, use_container_width=True, hide_index=True)
+        # Encontrar colunas mais relevantes
+        relevant_cols = []
+        priority_words = ['name', 'project', 'country', 'credit', 'issued', 'area', 'hectare', 'type', 'standard']
         
-        # Criar abas para diferentes visualizações
-        tab1, tab2, tab3 = st.tabs(["📋 Tabela Completa", "🎯 Colunas Relevantes", "📈 Análise Rápida"])
+        for word in priority_words:
+            for col in filtered_df.columns:
+                if word in str(col).lower() and col not in relevant_cols:
+                    relevant_cols.append(col)
         
-        with tab1:
-            # Mostrar todas as colunas (limitado a 100 linhas para performance)
-            display_limit = st.slider("Número de linhas para exibir:", 10, 500, 100, 10)
+        # Mostrar dados (formatando colunas numéricas)
+        if relevant_cols:
+            display_df = filtered_df[relevant_cols].head(50).copy()
             
-            # Identificar colunas para formatar
-            display_df = filtered_df.head(display_limit).copy()
-            
-            # Formatar todas as colunas numéricas
-            display_df_formatado = formatar_dataframe_br(display_df)
+            # Identificar e formatar colunas numéricas
+            for col in display_df.columns:
+                try:
+                    # Tentar converter para numérico
+                    numeric_series = pd.to_numeric(display_df[col], errors='coerce')
+                    if numeric_series.notna().any():
+                        # Formatar números inteiros
+                        if all(x == int(x) for x in numeric_series.dropna()):
+                            display_df[col] = numeric_series.apply(lambda x: formatar_br_inteiro(x) if pd.notna(x) else x)
+                        else:
+                            # Formatar números decimais
+                            display_df[col] = numeric_series.apply(lambda x: formatar_br(x) if pd.notna(x) else x)
+                except:
+                    pass
             
             st.dataframe(
-                display_df_formatado,
+                display_df,
                 use_container_width=True,
-                height=600,
+                height=400,
                 hide_index=True
             )
-            
-            # Opção para baixar os dados
-            csv = filtered_df.to_csv(index=False, encoding='utf-8-sig')
-            st.download_button(
-                label="📥 Baixar dados como CSV",
-                data=csv,
-                file_name=f"{selected_sheet.replace('.', '_').replace(' ', '_')}_projetos.csv",
-                mime="text/csv"
-            )
-        
-        with tab2:
-            # Encontrar automaticamente colunas mais relevantes
-            relevant_cols = identify_relevant_columns(filtered_df)
-            
-            if relevant_cols:
-                st.info(f"🔍 Identificadas {len(relevant_cols)} colunas relevantes automaticamente")
-                
-                # Mostrar apenas colunas relevantes
-                relevant_df = filtered_df[relevant_cols].head(100).copy()
-                
-                # Formatar colunas numéricas
-                relevant_df_formatado = formatar_dataframe_br(relevant_df)
-                
-                st.dataframe(
-                    relevant_df_formatado,
-                    use_container_width=True,
-                    height=400,
-                    hide_index=True
-                )
-            else:
-                st.warning("Não foi possível identificar colunas relevantes automaticamente.")
-        
-        with tab3:
-            # Análise rápida dos dados
-            if not filtered_df.empty:
-                st.markdown("#### 📈 Estatísticas Rápidas")
-                
-                # Contar projetos por país (se houver coluna de país)
-                country_col = None
-                for col in filtered_df.columns:
-                    if any(word in str(col).lower() for word in ['country', 'pais']):
-                        country_col = col
-                        break
-                
-                if country_col:
-                    paises_contagem = filtered_df[country_col].dropna().value_counts().head(10)
-                    if not paises_contagem.empty:
-                        st.markdown(f"**Top 10 países:**")
-                        for pais, count in paises_contagem.items():
-                            pais_nome = get_country_name(str(pais))
-                            st.write(f"- {pais_nome}: {formatar_br_inteiro(count)} projetos")
-                
-                # Encontrar coluna de créditos/volume
-                credit_col = None
-                for col in filtered_df.columns:
-                    if any(word in str(col).lower() for word in ['credit', 'volume', 'issued', 'amount', 'total', 'credits']):
-                        credit_col = col
-                        break
-                
-                if credit_col:
-                    try:
-                        creditos_series = pd.to_numeric(filtered_df[credit_col], errors='coerce')
-                        creditos_validos = creditos_series.dropna()
-                        if not creditos_validos.empty:
-                            st.markdown(f"**Estatísticas de créditos:**")
-                            st.write(f"- Total: {formatar_br_inteiro(creditos_validos.sum())} créditos")
-                            st.write(f"- Média por projeto: {formatar_br(creditos_validos.mean())}")
-                            st.write(f"- Projeto maior: {formatar_br_inteiro(creditos_validos.max())}")
-                            st.write(f"- Projeto menor: {formatar_br_inteiro(creditos_validos.min())}")
-                    except:
-                        pass
-                
-                # Estatísticas gerais
-                st.markdown(f"**Resumo geral:**")
-                st.write(f"- Total de linhas: {formatar_br_inteiro(len(filtered_df))}")
-                st.write(f"- Total de colunas: {formatar_br_inteiro(len(filtered_df.columns))}")
-                
-                # Mostrar tipos de dados
-                tipo_contagem = filtered_df.dtypes.value_counts()
-                if not tipo_contagem.empty:
-                    st.markdown(f"**Tipos de dados:**")
-                    for tipo, count in tipo_contagem.items():
-                        st.write(f"- {tipo}: {formatar_br_inteiro(count)} colunas")
-
-def identify_relevant_columns(df):
-    """Identifica automaticamente as colunas mais relevantes no dataframe"""
-    relevant_cols = []
-    
-    if df.empty:
-        return relevant_cols
-    
-    # Palavras-chave para diferentes tipos de colunas
-    priority_keywords = {
-        'alta': ['name', 'project', 'title', 'nome', 'projeto', 'id'],
-        'media': ['country', 'pais', 'location', 'region', 'standard', 'methodology'],
-        'baixa': ['credit', 'issued', 'volume', 'amount', 'total', 'area', 'hectare', 'ha']
-    }
-    
-    # Primeiro, identificar colunas que parecem ser cabeçalhos
-    first_row = df.iloc[0] if not df.empty else None
-    
-    for col in df.columns:
-        col_str = str(col).lower()
-        col_value = str(first_row[col]).lower() if first_row is not None and col in df.columns else ""
-        
-        # Verificar se o nome da coluna contém palavras-chave
-        found = False
-        for priority, keywords in priority_keywords.items():
-            for keyword in keywords:
-                if keyword in col_str or keyword in col_value:
-                    if col not in relevant_cols:
-                        relevant_cols.append(col)
-                    found = True
-                    break
-            if found:
-                break
-        
-        # Se não encontrou por nome, verificar pelo tipo de dados
-        if not found and not df.empty:
-            # Amostrar alguns valores da coluna
-            sample_values = df[col].dropna().head(5)
-            if len(sample_values) > 0:
-                # Verificar se parece ser texto descritivo (nome, descrição)
-                all_strings = all(isinstance(val, str) for val in sample_values)
-                if all_strings:
-                    avg_len = np.mean([len(str(val)) for val in sample_values])
-                    if 5 < avg_len < 100:  # Textos de tamanho razoável
-                        relevant_cols.append(col)
-    
-    # Limitar a 8 colunas mais relevantes
-    return relevant_cols[:8] if relevant_cols else df.columns.tolist()[:min(8, len(df.columns))]
 
 def render_market_statistics(analysis):
     """Estatísticas detalhadas do mercado real"""
@@ -1190,38 +942,7 @@ def load_fao_dataset():
         
         for sheet in excel.sheet_names:
             try:
-                # Tentar detectar automaticamente o cabeçalho
-                # Primeiro, ler sem cabeçalho para inspecionar
-                df_raw = excel.parse(sheet, header=None, nrows=5)
-                
-                # Verificar se a primeira linha parece ser cabeçalho
-                first_row = df_raw.iloc[0] if not df_raw.empty else pd.Series()
-                second_row = df_raw.iloc[1] if len(df_raw) > 1 else pd.Series()
-                
-                # Heurística: se a primeira linha tem muitos strings e a segunda tem números
-                first_row_str_count = sum(isinstance(val, str) for val in first_row)
-                second_row_num_count = 0
-                
-                for val in second_row:
-                    try:
-                        float(str(val))
-                        second_row_num_count += 1
-                    except:
-                        pass
-                
-                total_cols = len(first_row)
-                
-                # Decidir se a primeira linha é cabeçalho
-                if total_cols > 0:
-                    if (first_row_str_count / total_cols) > 0.7:
-                        # Primeira linha parece ser cabeçalho
-                        df = excel.parse(sheet, header=0)
-                    else:
-                        # Ler sem cabeçalho e criar nomes genéricos
-                        df = excel.parse(sheet, header=None)
-                        df.columns = [f"Coluna_{i+1}" for i in range(len(df.columns))]
-                else:
-                    df = excel.parse(sheet, header=0)
+                df = excel.parse(sheet, header=0)
                 
                 # Limpeza básica
                 df = df.dropna(axis=1, how='all')
@@ -1229,9 +950,6 @@ def load_fao_dataset():
                 
                 # Remover colunas completamente vazias
                 df = df.loc[:, df.notna().any()]
-                
-                # Remover linhas completamente vazias
-                df = df.dropna(how='all')
                 
                 data[sheet] = df
                 sheet_names.append(sheet)
@@ -1245,41 +963,6 @@ def load_fao_dataset():
     except Exception as e:
         st.error(f"❌ Erro crítico ao carregar dados: {str(e)}")
         return None, None
-
-def show_file_structure():
-    """Mostra a estrutura do arquivo Excel"""
-    st.markdown("### 📁 Estrutura do Arquivo Excel")
-    
-    if 'dataframes' in st.session_state:
-        dataframes = st.session_state.dataframes
-        
-        for sheet_name, df in dataframes.items():
-            with st.expander(f"{SHEET_CONFIG.get(sheet_name, {}).get('icon', '📄')} {sheet_name} ({len(df)} linhas × {len(df.columns)} colunas)"):
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Linhas", formatar_br_inteiro(len(df)))
-                with col2:
-                    st.metric("Colunas", formatar_br_inteiro(len(df.columns)))
-                with col3:
-                    non_empty = df.dropna(how='all').shape[0]
-                    st.metric("Não vazias", formatar_br_inteiro(non_empty))
-                
-                # Mostrar primeiras linhas para diagnóstico
-                st.markdown("**Primeiras 3 linhas:**")
-                display_df = df.head(3).copy()
-                display_df_formatado = formatar_dataframe_br(display_df)
-                st.dataframe(display_df_formatado, use_container_width=True)
-                
-                # Mostrar nomes das colunas
-                st.markdown("**Nomes das colunas:**")
-                cols_df = pd.DataFrame({
-                    'Nº': range(1, len(df.columns) + 1),
-                    'Nome da Coluna': df.columns.tolist(),
-                    'Tipo': [str(df[col].dtype) for col in df.columns],
-                    'Não Nulos': [formatar_br_inteiro(df[col].notna().sum()) for col in df.columns]
-                })
-                cols_df_formatado = formatar_dataframe_br(cols_df)
-                st.dataframe(cols_df_formatado, use_container_width=True, hide_index=True)
 
 # =========================
 # APLICAÇÃO PRINCIPAL
@@ -1339,15 +1022,6 @@ def main():
         - **Projetos:** Certificados e ativos
         - **Atualização:** Automática ao carregar
         """)
-        
-        st.markdown("---")
-        if st.button("🔧 Ver Estrutura do Arquivo"):
-            st.session_state.show_structure = True
-        
-        if 'show_structure' in st.session_state and st.session_state.show_structure:
-            show_file_structure()
-            if st.button("Fechar Estrutura"):
-                st.session_state.show_structure = False
     
     # Renderizar página
     if page == "🏠 Mercado Real":
