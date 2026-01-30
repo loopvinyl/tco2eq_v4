@@ -1181,7 +1181,7 @@ def create_timeline_chart(analysis):
         yaxis='y2'
     ))
     
-    # Configurar layout
+    # Configurar layout - CORRIGIDO: titlefont -> title_font
     fig.update_layout(
         title='📈 Evolução do Mercado de Carbono Agrícola',
         xaxis=dict(
@@ -1192,13 +1192,13 @@ def create_timeline_chart(analysis):
         ),
         yaxis=dict(
             title='Projetos Registrados',
-            titlefont=dict(color='#3498db'),
+            title_font=dict(color='#3498db'),  # CORRIGIDO AQUI
             tickfont=dict(color='#3498db'),
             side='left'
         ),
         yaxis2=dict(
             title='Créditos (em milhares)',
-            titlefont=dict(color='#2ecc71'),
+            title_font=dict(color='#2ecc71'),  # CORRIGIDO AQUI
             tickfont=dict(color='#2ecc71'),
             overlaying='y',
             side='right'
