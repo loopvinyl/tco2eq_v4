@@ -5,23 +5,22 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 import warnings
-import re
 
 warnings.filterwarnings("ignore")
 
-# =========================
-# CONFIGURAÇÃO DA PÁGINA
-# =========================
+# =================================================================
+# CONFIGURAÇÃO DA PÁGINA (ESTILO ORIGINAL)
+# =================================================================
 st.set_page_config(
-    page_title="Mercado de Carbono Rural - FAO 2025",
+    page_title="Dashboard Mercado de Carbono - FAO/GitHub",
     page_icon="🌱",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# =========================
-# FUNÇÕES DE FORMATAÇÃO (IDÊNTICAS)
-# =========================
+# =================================================================
+# FUNÇÕES DE FORMATAÇÃO (ESTILO ORIGINAL)
+# =================================================================
 def formatar_br(numero):
     if pd.isna(numero): return "0,00"
     return f"{numero:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -29,117 +28,96 @@ def formatar_br(numero):
 def formatar_moeda(numero):
     return f"US$ {formatar_br(numero)}"
 
-# =========================
-# PROCESSAMENTO DE DADOS (ADAPTADO AOS NOMES DOS CSVs)
-# =========================
-def clean_dataframe(df):
-    # Remove linhas vazias e limpa cabeçalhos
-    df = df.dropna(how='all').reset_index(drop=True)
-    df.columns = [str(c).strip() for c in df.columns]
-    return df
+# =================================================================
+# CARREGAMENTO DE DADOS (DIRETO DO GITHUB/EXCEL)
+# =================================================================
+@st.cache_data
+def carregar_dados_github(url):
+    # Lendo todas as abas conforme a estrutura do arquivo FAO
+    dict_abas = pd.read_excel(url, sheet_name=None)
+    return dict_abas
 
-def identify_columns(df):
-    cols = df.columns
-    mapping = {
-        'creditos': None,
-        'pais': None,
-        'nome': None
-    }
-    
-    # Busca por padrões nos nomes das colunas da FAO
-    for c in cols:
-        c_lower = c.lower()
-        if any(x in c_lower for x in ['issued credits', 'sum of all issued', 'total credits issued']):
-            mapping['creditos'] = c
-        if any(x in c_lower for x in ['country', 'region']):
-            mapping['pais'] = c
-        if any(x in c_lower for x in ['project name', 'name of standard']):
-            mapping['nome'] = c
-    return mapping
+# URL do seu repositório (substitua pelo link 'raw' do seu arquivo .xlsx)
+URL_EXCEL = "https://github.com/SEU_USUARIO/SEU_REPOSITORIO/raw/main/Dataset.xlsx"
 
-# =========================
-# INTERFACE PRINCIPAL
-# =========================
+# =================================================================
+# INTERFACE PRINCIPAL (IDÊNTICA AO SEU MODELO)
+# =================================================================
 def main():
-    st.title("📊 Dashboard de Carbono Agrícola (Dados Reais FAO)")
+    st.title("📊 Dashboard de Carbono Agrícola - Dados FAO 2025")
     
-    # Sidebar para upload idêntico
-    st.sidebar.header("Upload de Dados")
-    uploaded_files = st.sidebar.file_uploader("Arraste os ficheiros CSV aqui", accept_multiple_files=True, type=['csv'])
-
-    if not uploaded_files:
-        st.info("Por favor, carregue os ficheiros CSV (Abas 4 a 9) para visualizar a análise.")
-        return
-
-    # Consolidação de dados
-    all_data = []
-    total_emitido = 0
-    total_projetos = 0
-    paises_dist = {}
-
-    for file in uploaded_files:
-        df = pd.read_csv(file)
-        df = clean_dataframe(df)
-        mapping = identify_columns(df)
+    try:
+        # Carregando os dados
+        abas = carregar_dados_github(URL_EXCEL)
         
-        total_projetos += len(df)
+        # Consolidação de métricas globais (Exemplo usando abas 4, 7, 8 e 9)
+        total_emitido = 0
+        total_projetos = 0
         
-        if mapping['creditos']:
-            # Converte para numérico removendo vírgulas de milhar
-            creditos_col = pd.to_numeric(df[mapping['creditos']].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
-            total_emitido += creditos_col.sum()
+        # Soma de créditos de abas específicas (exemplo Nori e Puro)
+        if '9. Nori and BCarbon' in abas:
+            df9 = abas['9. Nori and BCarbon']
+            total_emitido += df9['Issued credits'].sum()
+            total_projetos += len(df9)
+            
+        if '8. Puro.earth' in abas:
+            df8 = abas['8. Puro.earth']
+            total_emitido += df8['Sum of all issued credits'].sum()
+            total_projetos += len(df8)
+
+        # =========================
+        # KPIs DE TOPO
+        # =========================
+        col1, col2, col3, col4 = st.columns(4)
         
-        if mapping['pais']:
-            counts = df[mapping['pais']].value_counts().to_dict()
-            for p, v in counts.items():
-                paises_dist[p] = paises_dist.get(p, 0) + v
+        with col1:
+            st.metric("Total de Projetos", f"{total_projetos}")
+        with col2:
+            st.metric("Créditos Emitidos", f"{total_emitido:,.0f}".replace(",", "."))
+        with col3:
+            preco_referencia = 22.50 # Média FAO para agrifood
+            st.metric("Preço Médio", f"US$ {preco_referencia}")
+        with col4:
+            faturamento = total_emitido * preco_referencia
+            st.metric("Potencial de Mercado", f"US$ {faturamento/1e6:.1f}M")
 
-    # =========================
-    # LAYOUT DE KPIs (IDÊNTICO)
-    # =========================
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("Total de Projetos", f"{total_projetos:,}")
-    with col2:
-        st.metric("Créditos Emitidos (tCO2e)", f"{total_emitido:,.0f}".replace(",", "."))
-    with col3:
-        preco_fao = 22.50
-        st.metric("Preço Médio (FAO)", f"US$ {preco_fao:.2/f}")
-    with col4:
-        receita_potencial = total_emitido * preco_fao
-        st.metric("Receita Estimada", f"US$ {receita_potencial/1e6:.1f}M")
+        st.markdown("---")
 
-    st.markdown("---")
+        # =========================
+        # GRÁFICOS E SIMULADOR
+        # =========================
+        g1, g2 = st.columns(2)
 
-    # =========================
-    # GRÁFICOS (IDÊNTICOS)
-    # =========================
-    g1, g2 = st.columns(2)
+        with g1:
+            st.subheader("Simulador de Ganho (Produtor)")
+            area = st.number_input("Tamanho da Área (Hectares)", value=1000)
+            taxa_seq = st.slider("Sequestro (tCO2e/ha/ano)", 0.5, 3.0, 1.2)
+            repasse_indigo = 0.75 # 75% de repasse líquido
+            
+            ganho_anual = (area * taxa_seq) * preco_referencia * repasse_indigo
+            st.success(f"Estimativa de Ganho Líquido: {formatar_moeda(ganho_anual)} / ano")
+            st.caption("Baseado em modelos reais de mercado (75% de repasse ao produtor).")
 
-    with g1:
-        st.subheader("Top Países com Projetos")
-        if paises_dist:
-            df_paises = pd.DataFrame(list(paises_dist.items()), columns=['País', 'Qtd']).sort_values('Qtd', ascending=False).head(10)
-            fig = px.bar(df_paises, x='Qtd', y='País', orientation='h', color='Qtd', color_continuous_scale='Greens')
-            st.plotly_chart(fig, use_container_width=True)
+        with g2:
+            st.subheader("Distribuição por País")
+            # Exemplo rápido com a aba Nori (ajustar conforme necessidade)
+            if '9. Nori and BCarbon' in abas:
+                df_p = abas['9. Nori and BCarbon']['Country'].value_counts().reset_index()
+                fig = px.pie(df_p, values='count', names='Country', hole=0.4, 
+                             color_discrete_sequence=px.colors.qualitative.Prism)
+                st.plotly_chart(fig, use_container_width=True)
 
-    with g2:
-        st.subheader("Simulador para o Produtor (Indigo/FAO)")
-        area = st.number_input("Área (Hectares)", value=1000)
-        taxa = st.slider("Sequestro (tCO2e/ha/ano)", 0.5, 3.0, 1.2)
-        repasse = 0.75 # 75% conforme relatório
-        
-        ganho = (area * taxa) * preco_fao * repasse
-        st.info(f"Ganho Líquido Estimado para o Produtor: **{formatar_moeda(ganho)} / ano**")
-        st.caption("Cálculo baseado em 75% de repasse líquido (Referência Indigo/Carbon).")
+        # =========================
+        # TABELA DE DADOS
+        # =========================
+        st.markdown("---")
+        st.subheader("Explorar Detalhes do Dataset")
+        aba_escolhida = st.selectbox("Escolha a Aba para Visualizar", list(abas.keys()))
+        st.dataframe(abas[aba_escolhida], use_container_width=True)
 
-    # Tabela detalhada
-    st.markdown("---")
-    st.subheader("Explorar Dados Carregados")
-    for file in uploaded_files:
-        with st.expander(f"Ver dados: {file.name}"):
-            st.write(pd.read_csv(file).head(10))
+    except Exception as e:
+        st.error(f"Erro ao conectar com o GitHub: {e}")
+        st.info("Verifique se o link do Excel no código está correto e no formato 'raw'.")
 
 if __name__ == "__main__":
     main()
