@@ -411,9 +411,13 @@ def analyze_complete_dataset(dataframes):
                 projetos_agrifood = row.get('Registered AGRIFOOD projects', '')
                 
                 if standard_name and standard_name != '' and standard_name != 'TOTALS':
+                    # Converter para numérico garantindo que não seja None
+                    total_num = convert_to_numeric(total_projetos) or 0
+                    agrifood_num = convert_to_numeric(projetos_agrifood) or 0
+                    
                     analysis['standards_mais_utilizados'][standard_name] = {
-                        'total_projetos': convert_to_numeric(total_projetos),
-                        'projetos_agrifood': convert_to_numeric(projetos_agrifood)
+                        'total_projetos': total_num,
+                        'projetos_agrifood': agrifood_num
                     }
             except:
                 continue
@@ -684,7 +688,7 @@ def extract_market_prices(dataframes):
 def convert_to_numeric(value):
     """Converte qualquer valor para numérico"""
     if pd.isna(value):
-        return None
+        return 0
     
     try:
         # Se já for número
@@ -698,7 +702,7 @@ def convert_to_numeric(value):
         str_value = re.sub(r'[^\d.,]', '', str_value)
         
         if not str_value:
-            return None
+            return 0
         
         # Substituir vírgula por ponto se necessário
         if ',' in str_value and '.' in str_value:
@@ -713,9 +717,9 @@ def convert_to_numeric(value):
                 # Múltiplas vírgulas, assume separador de milhar
                 str_value = str_value.replace(',', '')
         
-        return float(str_value) if str_value else None
+        return float(str_value) if str_value else 0
     except:
-        return None
+        return 0
 
 def extract_years(value):
     """Extrai número de anos de uma string"""
@@ -1197,7 +1201,7 @@ def render_opportunities_home(dataframes, analysis):
             fig2.update_layout(yaxis_tickformat=',')
             st.plotly_chart(fig2, use_container_width=True)
     
-    # Standards mais utilizados
+    # Standards mais utilizados - CORRIGIDO
     st.markdown("## 🏛️ Standards/Registries Mais Utilizados")
     
     standards = analysis.get('standards_mais_utilizados', {})
@@ -1210,6 +1214,7 @@ def render_opportunities_home(dataframes, analysis):
         ])
         
         if not standards_df.empty:
+            # Ordenar - AGORA SEM ERRO DE COMPARAÇÃO (valores são numéricos, não None)
             standards_df = standards_df.sort_values('Total Projetos', ascending=False).head(10)
             
             fig = px.bar(standards_df, x='Standard', y='Total Projetos',
