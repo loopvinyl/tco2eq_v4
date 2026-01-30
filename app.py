@@ -5,119 +5,180 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 import warnings
+import math
+import re
 
 warnings.filterwarnings("ignore")
 
-# =================================================================
-# CONFIGURAÇÃO DA PÁGINA (ESTILO ORIGINAL)
-# =================================================================
+# =========================
+# CONFIGURAÇÃO DA PÁGINA
+# =========================
 st.set_page_config(
-    page_title="Dashboard Mercado de Carbono - FAO/GitHub",
+    page_title="Mercado de Carbono para Propriedades Rurais - Baseado em Dados Reais FAO",
     page_icon="🌱",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# =================================================================
-# FUNÇÕES DE FORMATAÇÃO (ESTILO ORIGINAL)
-# =================================================================
-def formatar_br(numero):
-    if pd.isna(numero): return "0,00"
-    return f"{numero:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+# =========================
+# FUNÇÕES DE FORMATAÇÃO
+# =========================
 
-def formatar_moeda(numero):
-    return f"US$ {formatar_br(numero)}"
+def formatar_br_dec(numero, decimais=2):
+    if pd.isna(numero):
+        return "N/A"
+    numero = round(float(numero), decimais)
+    return f"{numero:,.{decimais}f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-# =================================================================
-# CARREGAMENTO DE DADOS (DIRETO DO GITHUB/EXCEL)
-# =================================================================
-@st.cache_data
-def carregar_dados_github(url):
-    # Lendo todas as abas conforme a estrutura do arquivo FAO
-    dict_abas = pd.read_excel(url, sheet_name=None)
-    return dict_abas
+def formatar_br_inteiro(numero):
+    if pd.isna(numero):
+        return "N/A"
+    return f"{int(numero):,}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-# URL do seu repositório (substitua pelo link 'raw' do seu arquivo .xlsx)
-URL_EXCEL = "https://github.com/SEU_USUARIO/SEU_REPOSITORIO/raw/main/Dataset.xlsx"
+# =========================
+# FUNÇÕES AUXILIARES
+# =========================
 
-# =================================================================
-# INTERFACE PRINCIPAL (IDÊNTICA AO SEU MODELO)
-# =================================================================
-def main():
-    st.title("📊 Dashboard de Carbono Agrícola - Dados FAO 2025")
-    
+def convert_to_numeric(value):
     try:
-        # Carregando os dados
-        abas = carregar_dados_github(URL_EXCEL)
-        
-        # Consolidação de métricas globais (Exemplo usando abas 4, 7, 8 e 9)
-        total_emitido = 0
-        total_projetos = 0
-        
-        # Soma de créditos de abas específicas (exemplo Nori e Puro)
-        if '9. Nori and BCarbon' in abas:
-            df9 = abas['9. Nori and BCarbon']
-            total_emitido += df9['Issued credits'].sum()
-            total_projetos += len(df9)
-            
-        if '8. Puro.earth' in abas:
-            df8 = abas['8. Puro.earth']
-            total_emitido += df8['Sum of all issued credits'].sum()
-            total_projetos += len(df8)
+        if pd.isna(value):
+            return None
+        if isinstance(value, str):
+            value = value.replace(",", "").strip()
+        return float(value)
+    except:
+        return None
 
-        # =========================
-        # KPIs DE TOPO
-        # =========================
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("Total de Projetos", f"{total_projetos}")
-        with col2:
-            st.metric("Créditos Emitidos", f"{total_emitido:,.0f}".replace(",", "."))
-        with col3:
-            preco_referencia = 22.50 # Média FAO para agrifood
-            st.metric("Preço Médio", f"US$ {preco_referencia}")
-        with col4:
-            faturamento = total_emitido * preco_referencia
-            st.metric("Potencial de Mercado", f"US$ {faturamento/1e6:.1f}M")
+def extract_year_from_value(value):
+    if pd.isna(value):
+        return None
+    match = re.search(r"(19|20)\d{2}", str(value))
+    return int(match.group()) if match else None
 
-        st.markdown("---")
+def get_country_name(value):
+    if not value:
+        return "Não especificado"
+    return str(value).strip().title()
 
-        # =========================
-        # GRÁFICOS E SIMULADOR
-        # =========================
-        g1, g2 = st.columns(2)
+def clean_dataframe(df):
+    df = df.copy()
+    df = df.dropna(axis=1, how="all")
+    df = df.dropna(how="all")
+    df.reset_index(drop=True, inplace=True)
+    return df
 
-        with g1:
-            st.subheader("Simulador de Ganho (Produtor)")
-            area = st.number_input("Tamanho da Área (Hectares)", value=1000)
-            taxa_seq = st.slider("Sequestro (tCO2e/ha/ano)", 0.5, 3.0, 1.2)
-            repasse_indigo = 0.75 # 75% de repasse líquido
-            
-            ganho_anual = (area * taxa_seq) * preco_referencia * repasse_indigo
-            st.success(f"Estimativa de Ganho Líquido: {formatar_moeda(ganho_anual)} / ano")
-            st.caption("Baseado em modelos reais de mercado (75% de repasse ao produtor).")
+# =========================================================
+# 🔥 NOVA FUNÇÃO — TOTAIS OFICIAIS DO MERCADO (FAO)
+# =========================================================
 
-        with g2:
-            st.subheader("Distribuição por País")
-            # Exemplo rápido com a aba Nori (ajustar conforme necessidade)
-            if '9. Nori and BCarbon' in abas:
-                df_p = abas['9. Nori and BCarbon']['Country'].value_counts().reset_index()
-                fig = px.pie(df_p, values='count', names='Country', hole=0.4, 
-                             color_discrete_sequence=px.colors.qualitative.Prism)
-                st.plotly_chart(fig, use_container_width=True)
+def extract_global_totals_from_standards(dataframes):
+    """
+    Fonte única:
+    Aba '1. Standards' — linha 'TOTALS'
+    """
+    totals = {
+        "projetos_registrados": 0,
+        "creditos_emitidos": 0,
+        "creditos_aposentados": 0
+    }
 
-        # =========================
-        # TABELA DE DADOS
-        # =========================
-        st.markdown("---")
-        st.subheader("Explorar Detalhes do Dataset")
-        aba_escolhida = st.selectbox("Escolha a Aba para Visualizar", list(abas.keys()))
-        st.dataframe(abas[aba_escolhida], use_container_width=True)
+    if "1. Standards" not in dataframes:
+        return totals
 
-    except Exception as e:
-        st.error(f"Erro ao conectar com o GitHub: {e}")
-        st.info("Verifique se o link do Excel no código está correto e no formato 'raw'.")
+    df = clean_dataframe(dataframes["1. Standards"])
 
-if __name__ == "__main__":
-    main()
+    for _, row in df.iterrows():
+        nome = str(row.get("Name of standard/registry/platform", "")).upper()
+        if nome == "TOTALS":
+            totals["projetos_registrados"] = convert_to_numeric(
+                row.get("Total registered projects")
+            ) or 0
+            totals["creditos_emitidos"] = convert_to_numeric(
+                row.get("Total credits issued")
+            ) or 0
+            totals["creditos_aposentados"] = convert_to_numeric(
+                row.get("Total credits retired")
+            ) or 0
+            break
+
+    return totals
+
+# =========================================================
+# ANÁLISE COMPLETA DO DATASET
+# =========================================================
+
+@st.cache_data(ttl=3600)
+def analyze_complete_dataset(dataframes):
+
+    analysis = {
+        "estatisticas_gerais": {},
+        "comparativo_emitidos_vs_aposentados": {
+            "total_emitido": 0,
+            "total_aposentado": 0
+        }
+    }
+
+    # -----------------------------------------------------
+    # ANÁLISE ORIGINAL (mantida)
+    # -----------------------------------------------------
+
+    for sheet, df in dataframes.items():
+        df = clean_dataframe(df)
+        for _, row in df.iterrows():
+            emitidos = convert_to_numeric(row.get("Total credits issued")) or 0
+            aposentados = convert_to_numeric(row.get("Total credits retired")) or 0
+
+            analysis["comparativo_emitidos_vs_aposentados"]["total_emitido"] += emitidos
+            analysis["comparativo_emitidos_vs_aposentados"]["total_aposentado"] += aposentados
+
+    # -----------------------------------------------------
+    # 🔥 AJUSTE FINAL — TOTAIS OFICIAIS DO MERCADO
+    # -----------------------------------------------------
+
+    official_totals = extract_global_totals_from_standards(dataframes)
+
+    emitidos = official_totals["creditos_emitidos"]
+    aposentados = official_totals["creditos_aposentados"]
+
+    analysis["estatisticas_gerais"] = {
+        "total_projetos": official_totals["projetos_registrados"],
+        "creditos_emitidos": emitidos,
+        "creditos_aposentados": aposentados,
+        "taxa_aposentadoria": (aposentados / emitidos * 100) if emitidos > 0 else 0
+    }
+
+    return analysis
+
+# =========================================================
+# STREAMLIT — CARGA E EXECUÇÃO
+# =========================================================
+
+st.title("🌱 Mercado Voluntário de Carbono — Visão Global")
+
+uploaded_file = st.file_uploader("Upload do Dataset FAO (.xlsx)", type=["xlsx"])
+
+if uploaded_file:
+    xls = pd.ExcelFile(uploaded_file)
+    dataframes = {sheet: xls.parse(sheet) for sheet in xls.sheet_names}
+
+    analysis = analyze_complete_dataset(dataframes)
+
+    st.metric(
+        "Projetos registrados (mercado voluntário)",
+        formatar_br_inteiro(analysis["estatisticas_gerais"]["total_projetos"])
+    )
+
+    st.metric(
+        "Créditos emitidos",
+        formatar_br_inteiro(analysis["estatisticas_gerais"]["creditos_emitidos"])
+    )
+
+    st.metric(
+        "Créditos aposentados",
+        formatar_br_inteiro(analysis["estatisticas_gerais"]["creditos_aposentados"])
+    )
+
+    st.metric(
+        "Taxa de aposentadoria (%)",
+        formatar_br_dec(analysis["estatisticas_gerais"]["taxa_aposentadoria"], 1)
+    )
