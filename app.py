@@ -316,7 +316,6 @@ def analyze_complete_dataset(dataframes):
         'metodologias_populares': {},
         'standards_mais_utilizados': {},
         'comparativo_emitidos_vs_aposentados': {'total_emitido': 0, 'total_aposentado': 0},
-        'timeline_data': {'anos': [], 'registrados': [], 'emitidos': [], 'aposentados': []},
         'categorias_projetos': {
             'agricultura': {'total': 0, 'creditos': 0, 'area_total': 0, 'projetos_com_creditos': 0},
             'agroflorestal': {'total': 0, 'creditos': 0, 'area_total': 0, 'projetos_com_creditos': 0},
@@ -333,9 +332,6 @@ def analyze_complete_dataset(dataframes):
         '8. Puro.earth': 'agricultura',  # Biochar é agricultura
         '9. Nori and BCarbon': 'agricultura'
     }
-    
-    # Dicionário para acumular dados por ano
-    timeline_dict = {}
     
     # 1. ANÁLISE POR PROJETO (extraindo casos reais)
     for sheet_name, category in CATEGORY_MAPPING.items():
@@ -382,27 +378,6 @@ def analyze_complete_dataset(dataframes):
                     analysis['comparativo_emitidos_vs_aposentados']['total_emitido'] += projeto_info.get('creditos_emitidos', 0)
                     analysis['comparativo_emitidos_vs_aposentados']['total_aposentado'] += projeto_info.get('creditos_retirados', 0)
                     
-                    # Acumular dados da timeline
-                    ano_inicio = projeto_info.get('ano_inicio')
-                    if ano_inicio and ano_inicio > 1900:
-                        if ano_inicio not in timeline_dict:
-                            timeline_dict[ano_inicio] = {'registrados': 0, 'emitidos': 0, 'aposentados': 0}
-                        timeline_dict[ano_inicio]['registrados'] += 1
-                    
-                    # Processar créditos por ano se disponível
-                    creditos_por_ano = projeto_info.get('creditos_por_ano', {})
-                    for ano, quantidade in creditos_por_ano.items():
-                        if ano not in timeline_dict:
-                            timeline_dict[ano] = {'registrados': 0, 'emitidos': 0, 'aposentados': 0}
-                        timeline_dict[ano]['emitidos'] += quantidade
-                    
-                    # Processar aposentadorias por ano se disponível
-                    aposentados_por_ano = projeto_info.get('aposentados_por_ano', {})
-                    for ano, quantidade in aposentados_por_ano.items():
-                        if ano not in timeline_dict:
-                            timeline_dict[ano] = {'registrados': 0, 'emitidos': 0, 'aposentados': 0}
-                        timeline_dict[ano]['aposentados'] += quantidade
-                    
                     # Acumular metodologias/standards mais utilizados
                     metodologia = projeto_info.get('metodologia', 'Não especificada')
                     if metodologia != 'Não especificada':
@@ -436,61 +411,41 @@ def analyze_complete_dataset(dataframes):
                 projetos_agrifood = row.get('Registered AGRIFOOD projects', '')
                 
                 if standard_name and standard_name != '' and standard_name != 'TOTALS':
-                    # Converter para numérico garantindo que não seja None
-                    total_num = convert_to_numeric(total_projetos) or 0
-                    agrifood_num = convert_to_numeric(projetos_agrifood) or 0
-                    
                     analysis['standards_mais_utilizados'][standard_name] = {
-                        'total_projetos': total_num,
-                        'projetos_agrifood': agrifood_num
+                        'total_projetos': convert_to_numeric(total_projetos),
+                        'projetos_agrifood': convert_to_numeric(projetos_agrifood)
                     }
             except:
                 continue
     
-    # 3. Processar dados da timeline
-    if timeline_dict:
-        anos_ordenados = sorted(timeline_dict.keys())
-        for ano in anos_ordenados:
-            analysis['timeline_data']['anos'].append(ano)
-            analysis['timeline_data']['registrados'].append(timeline_dict[ano]['registrados'])
-            analysis['timeline_data']['emitidos'].append(timeline_dict[ano]['emitidos'])
-            analysis['timeline_data']['aposentados'].append(timeline_dict[ano]['aposentados'])
-    
-    # 4. CALCULAR ESTATÍSTICAS GERAIS
+    # 3. CALCULAR ESTATÍSTICAS GERAIS
     total_projetos = sum(cat['total'] for cat in analysis['categorias_projetos'].values())
     total_projetos_com_creditos = sum(cat['projetos_com_creditos'] for cat in analysis['categorias_projetos'].values())
     total_creditos = sum(cat['creditos'] for cat in analysis['categorias_projetos'].values())
     
-    # Calcular taxas de aposentadoria
+    # Usar preço médio realista (baseado em dados de mercado)
+    preco_medio = 22.5  # US$/tCO2 (preço médio de carbono agrícola)
+    receita_estimada = total_creditos * preco_medio
+    
+    # Calcular taxa de aposentadoria
     total_emitido = analysis['comparativo_emitidos_vs_aposentados']['total_emitido']
     total_aposentado = analysis['comparativo_emitidos_vs_aposentados']['total_aposentado']
     taxa_aposentadoria = (total_aposentado / total_emitido * 100) if total_emitido > 0 else 0
-    
-    # Usar preço médio realista (baseado em dados de mercado)
-    preco_medio = 22.5  # US$/tCO2 (preço médio de carbono agrícola)
-    
-    # CALCULAR RECEITAS CORRETAMENTE
-    receita_potencial = total_creditos * preco_medio  # Se todos os créditos fossem vendidos
-    receita_real = total_aposentado * preco_medio  # Créditos realmente vendidos
-    receita_media_por_projeto = receita_real / max(1, total_projetos_com_creditos) if total_projetos_com_creditos > 0 else 0
     
     analysis['estatisticas_gerais'] = {
         'total_projetos': total_projetos,
         'total_projetos_com_creditos': total_projetos_com_creditos,
         'total_creditos': total_creditos,
-        'total_aposentado': total_aposentado,
-        'receita_potencial': receita_potencial,
-        'receita_real': receita_real,
-        'receita_media_por_projeto': receita_media_por_projeto,
+        'receita_estimada': receita_estimada,
         'paises_com_projetos': len(analysis['projetos_por_pais']),
         'casos_sucesso_encontrados': len(analysis['casos_sucesso_reais']),
+        'receita_media_por_projeto': receita_estimada / max(1, total_projetos_com_creditos) if total_projetos_com_creditos > 0 else 0,
         'taxa_aposentadoria': taxa_aposentadoria,
         'creditos_emitidos': total_emitido,
-        'creditos_aposentados': total_aposentado,
-        'preco_medio': preco_medio
+        'creditos_aposentados': total_aposentado
     }
     
-    # 5. CALCULAR MÉDIAS DAS TAXAS DE SEQUESTRO
+    # 4. CALCULAR MÉDIAS DAS TAXAS DE SEQUESTRO
     for categoria, taxas in analysis['taxas_sequestro_reais'].items():
         if taxas:
             analysis['taxas_sequestro_reais'][categoria] = {
@@ -503,10 +458,10 @@ def analyze_complete_dataset(dataframes):
                 'amostra': len(taxas)
             }
     
-    # 6. ORDENAR CASOS DE SUCESSO POR DESEMPENHO
+    # 5. ORDENAR CASOS DE SUCESSO POR DESEMPENHO
     analysis['casos_sucesso_reais'].sort(key=lambda x: x.get('creditos_emitidos', 0), reverse=True)
     
-    # 7. ANALISAR PREÇOS DO MERCADO (se houver coluna de preço)
+    # 6. ANALISAR PREÇOS DO MERCADO (se houver coluna de preço)
     analysis['precos_mercado'] = extract_market_prices(dataframes)
     
     return analysis
@@ -525,9 +480,8 @@ def identify_columns(df, sheet_name):
         'duracao': None,
         'metodologia': None,
         'preco': None,
-        'data_inicio': None,
-        'standard': None,
-        'ano_inicio': None
+        'data': None,
+        'standard': None
     }
     
     if df is None or df.empty:
@@ -578,9 +532,6 @@ def identify_columns(df, sheet_name):
                 columns['creditos'] = col
             elif 'land' in col_str or 'area' in col_str or 'ha' in col_str:
                 columns['area'] = col
-            elif 'start' in col_str or 'date' in col_str or 'ano' in col_str:
-                columns['data_inicio'] = col
-                columns['ano_inicio'] = col
     
     # Se não encontrou por mapeamento específico, tentar inferir geral
     if columns['nome'] is None:
@@ -603,9 +554,8 @@ def identify_columns(df, sheet_name):
                 columns['creditos_retirados'] = col
             elif 'method' in col_str or 'methodology' in col_str or 'type' in col_str or 'tipo' in col_str or 'standard' in col_str:
                 columns['metodologia'] = col
-            elif 'year' in col_str or 'date' in col_str or 'ano' in col_str or 'data' in col_str or 'start' in col_str:
-                columns['data_inicio'] = col
-                columns['ano_inicio'] = col
+            elif 'year' in col_str or 'date' in col_str or 'ano' in col_str or 'data' in col_str:
+                columns['data'] = col
             elif 'price' in col_str or 'value' in col_str or 'valor' in col_str:
                 columns['preco'] = col
     
@@ -633,17 +583,8 @@ def extract_project_info(row, col_info, category, sheet_name):
             'pais': 'Não especificado',
             'nome': f"Projeto {category}",
             'metodologia': 'Não especificada',
-            'standard': 'Não especificado',
-            'ano_inicio': None,
-            'creditos_por_ano': {},
-            'aposentados_por_ano': {}
+            'standard': 'Não especificado'
         }
-        
-        # Extrair ano de início
-        if col_info['ano_inicio'] and col_info['ano_inicio'] in row:
-            ano_inicio = extract_year_from_value(row[col_info['ano_inicio']])
-            if ano_inicio and ano_inicio > 1900:
-                info['ano_inicio'] = ano_inicio
         
         # Extrair créditos emitidos
         if col_info['creditos'] and col_info['creditos'] in row:
@@ -708,42 +649,6 @@ def extract_project_info(row, col_info, category, sheet_name):
     except Exception as e:
         return None
 
-def extract_year_from_value(value):
-    """Extrai ano de uma data ou string"""
-    if pd.isna(value):
-        return None
-    
-    try:
-        # Se for número, verificar se é um ano razoável
-        if isinstance(value, (int, float)):
-            year = int(value)
-            if 1900 <= year <= 2100:
-                return year
-        
-        # Se for string, tentar extrair ano
-        str_value = str(value)
-        
-        # Procurar por padrão de ano 4 dígitos
-        import re
-        years = re.findall(r'\b(19\d{2}|20\d{2})\b', str_value)
-        if years:
-            year = int(years[0])
-            if 1900 <= year <= 2100:
-                return year
-        
-        # Tentar converter para datetime
-        try:
-            date_val = pd.to_datetime(value, errors='coerce')
-            if pd.notna(date_val):
-                return date_val.year
-        except:
-            pass
-            
-    except:
-        pass
-    
-    return None
-
 def extract_market_prices(dataframes):
     """Extrai informações de preços do mercado das abas relevantes"""
     precos = {
@@ -779,7 +684,7 @@ def extract_market_prices(dataframes):
 def convert_to_numeric(value):
     """Converte qualquer valor para numérico"""
     if pd.isna(value):
-        return 0
+        return None
     
     try:
         # Se já for número
@@ -793,7 +698,7 @@ def convert_to_numeric(value):
         str_value = re.sub(r'[^\d.,]', '', str_value)
         
         if not str_value:
-            return 0
+            return None
         
         # Substituir vírgula por ponto se necessário
         if ',' in str_value and '.' in str_value:
@@ -808,9 +713,9 @@ def convert_to_numeric(value):
                 # Múltiplas vírgulas, assume separador de milhar
                 str_value = str_value.replace(',', '')
         
-        return float(str_value) if str_value else 0
+        return float(str_value) if str_value else None
     except:
-        return 0
+        return None
 
 def extract_years(value):
     """Extrai número de anos de uma string"""
@@ -963,14 +868,12 @@ def create_hero_section(analysis):
     # Formatar valores para exibição
     total_projetos_com_creditos = stats.get('total_projetos_com_creditos', 0)
     total_creditos = stats.get('total_creditos', 0)
-    total_aposentado = stats.get('total_aposentado', 0)
     paises_com_projetos = stats.get('paises_com_projetos', 0)
-    receita_real = stats.get('receita_real', 0)
+    receita_estimada = stats.get('receita_estimada', 0)
     taxa_aposentadoria = stats.get('taxa_aposentadoria', 0)
     
     total_creditos_fmt = formatar_milhoes(total_creditos)
-    total_aposentado_fmt = formatar_milhoes(total_aposentado)
-    receita_real_fmt = formatar_moeda_curta(receita_real)
+    receita_estimada_fmt = formatar_moeda_curta(receita_estimada)
     
     st.markdown(f"""
     <div style='text-align: center; padding: 2rem; border-radius: 15px; 
@@ -979,9 +882,9 @@ def create_hero_section(analysis):
         <h1 style='font-size: 3rem; margin-bottom: 0.5rem;'>🌱 Mercado Real de Carbono Agrícola</h1>
         <h3 style='font-weight: 300;'>Baseado em {formatar_br_inteiro(total_projetos_com_creditos)} projetos que emitiram créditos (FAO)</h3>
         <p style='font-size: 1.1rem; opacity: 0.9;'>
-            {total_creditos_fmt} créditos emitidos • {total_aposentado_fmt} vendidos • {paises_com_projetos} países • 
-            US$ {receita_real_fmt} em receita real • 
-            {formatar_br_dec(taxa_aposentadoria, 2)}% dos créditos já vendidos
+            {total_creditos_fmt} créditos emitidos • {paises_com_projetos} países • 
+            US$ {receita_estimada_fmt} em receita gerada • 
+            {formatar_br_dec(taxa_aposentadoria, 1)}% dos créditos já aposentados
         </p>
     </div>
     """, unsafe_allow_html=True)
@@ -1052,7 +955,7 @@ def create_revenue_calculator(analysis):
                 st.write(f"**Investimento inicial:** US$ {formatar_moeda_curta(investment)}")
 
 def create_success_stories_from_data(analysis):
-    """Cria casos de sucesso 100% baseados em dados reais - FOCADO EM PROJETOS QUE JÁ VENDERAM"""
+    """Cria casos de sucesso 100% baseados em dados reais"""
     
     if not analysis:
         st.warning("📊 **Carregando análise...**")
@@ -1064,35 +967,15 @@ def create_success_stories_from_data(analysis):
         st.warning("📊 **Analisando projetos...** Em breve mostraremos casos reais baseados no dataset.")
         return
     
-    # FILTRAR: Somente projetos que já aposentaram créditos (venderam)
-    projetos_com_vendas = [
-        story for story in success_stories 
-        if story.get('creditos_retirados', 0) > 0 and story.get('creditos_emitidos', 0) > 0
-    ]
+    # Limitar a 4 melhores casos
+    top_stories = success_stories[:4]
     
-    if not projetos_com_vendas:
-        st.info("📊 **Busquei, mas nenhum projeto encontrado com créditos já vendidos.** Isso mostra que o mercado ainda está em crescimento!")
-        return
+    st.markdown("## 📚 Casos Reais de Projetos que Geram Créditos")
+    st.info(f"💡 **Baseado em {formatar_br_inteiro(len(success_stories))} projetos certificados do dataset FAO**")
     
-    # ORDENAR: Por taxa de aposentadoria (projetos que mais venderam em %)
-    projetos_com_vendas.sort(
-        key=lambda x: (x.get('creditos_retirados', 0) / x.get('creditos_emitidos', 0) * 100) 
-        if x.get('creditos_emitidos', 0) > 0 else 0,
-        reverse=True
-    )
-    
-    # Limitar a 3 melhores casos (os que mais venderam em porcentagem)
-    top_stories = projetos_com_vendas[:3]
-    
-    st.markdown("## 📚 Casos Reais de Projetos que JÁ VENDERAM Créditos")
-    
-    col1, col2 = st.columns(2)
-    col1.info(f"💡 **Baseado em {formatar_br_inteiro(len(projetos_com_vendas))} projetos que já venderam créditos**")
-    col2.success(f"🏆 **Mostrando os 3 que mais venderam (em %)**")
-    
-    cols = st.columns(3)
+    cols = st.columns(2)
     for i, story in enumerate(top_stories):
-        with cols[i]:
+        with cols[i % 2]:
             # Ícone baseado na categoria
             icon_map = {
                 'agricultura': '🌱',
@@ -1101,237 +984,52 @@ def create_success_stories_from_data(analysis):
             }
             icon = icon_map.get(story.get('categoria', ''), '✅')
             
-            # Cálculos importantes
-            creditos_emitidos = story.get('creditos_emitidos', 0)
-            creditos_vendidos = story.get('creditos_retirados', 0)
-            taxa_venda = (creditos_vendidos / creditos_emitidos * 100) if creditos_emitidos > 0 else 0
-            area_hectares = story.get('area_hectares', 0)
-            
-            # Calcular receita real (baseada em créditos vendidos)
-            receita_real = creditos_vendidos * 22.5  # US$22.5/tCO2
-            receita_potencial = creditos_emitidos * 22.5
-            
             # Formatar descrição
-            descricao = f"**{story.get('nome', 'Projeto Certificado')}**"
-            descricao += f"\n📍 {story.get('pais', 'Não especificado')}"
+            descricao = f"Projeto certificado em {story.get('pais', 'Não especificado')}"
+            if story.get('area_hectares', 0) > 0:
+                descricao += f" com {formatar_br_inteiro(story['area_hectares'])} hectares"
+            if story.get('creditos_emitidos', 0) > 0:
+                descricao += f". Emitiu {formatar_milhoes(story['creditos_emitidos'])} créditos de carbono"
             
-            if area_hectares > 0:
-                descricao += f" | 📏 {formatar_br_inteiro(area_hectares)} ha"
+            if story.get('creditos_retirados', 0) > 0:
+                taxa_aposent = story.get('taxa_aposentadoria_projeto', 0)
+                descricao += f" ({formatar_br_dec(taxa_aposent, 1)}% já aposentados)"
             
-            descricao += f"\n📊 {story.get('metodologia', 'Metodologia não especificada')}"
-            
-            # Estrelas de desempenho baseado na taxa de venda
-            estrelas = ""
-            if taxa_venda >= 80:
-                estrelas = "⭐⭐⭐⭐⭐"
-            elif taxa_venda >= 60:
-                estrelas = "⭐⭐⭐⭐"
-            elif taxa_venda >= 40:
-                estrelas = "⭐⭐⭐"
-            elif taxa_venda >= 20:
-                estrelas = "⭐⭐"
-            else:
-                estrelas = "⭐"
+            # Calcular receita e formatar
+            receita = story.get('receita_estimada', 0)
+            receita_anual = story.get('receita_anual', 0)
             
             st.markdown(f"""
-            <div style='background: linear-gradient(135deg, #ffffff, #f8f9fa); 
-                        padding: 1.5rem; border-radius: 15px; 
-                        box-shadow: 0 8px 16px rgba(46, 204, 113, 0.15); 
-                        margin: 0.5rem 0; 
-                        border-left: 6px solid #27ae60;
-                        border-top: 1px solid #e8f5e9;
-                        border-bottom: 1px solid #e8f5e9;
-                        height: 100%;'>
-                
+            <div style='background: white; padding: 1.5rem; border-radius: 10px; 
+                        box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin: 1rem 0; 
+                        border-top: 5px solid #27ae60;'>
                 <div style='display: flex; align-items: center; margin-bottom: 1rem;'>
-                    <div style='font-size: 2.5rem; margin-right: 1rem;'>{icon}</div>
-                    <div>
-                        <h4 style='margin: 0; color: #2c3e50; font-size: 1.1rem;'>
-                            {story.get('nome', 'Projeto Certificado')[:40]}{'...' if len(story.get('nome', '')) > 40 else ''}
-                        </h4>
-                        <div style='color: #7f8c8d; font-size: 0.9rem; margin-top: 0.2rem;'>
-                            {story.get('categoria', '').title()} • {story.get('pais', 'Não especificado')}
-                        </div>
-                    </div>
+                    <div style='font-size: 2rem; margin-right: 1rem;'>{icon}</div>
+                    <h3 style='margin: 0; color: #2c3e50; font-size: 1.1rem;'>{story.get('nome', 'Projeto Certificado')}</h3>
                 </div>
-                
-                <div style='background: #e8f5e9; padding: 0.8rem; border-radius: 8px; margin: 1rem 0;'>
-                    <div style='font-size: 0.9rem; color: #27ae60; font-weight: bold; margin-bottom: 0.3rem;'>
-                        🏆 DESEMPENHO COMERCIAL {estrelas}
-                    </div>
+                <p style='color: #7f8c8d; line-height: 1.6; font-size: 0.9rem;'>{descricao}</p>
+                <div style='background: #f8f9fa; padding: 1rem; border-radius: 5px; margin: 1rem 0;'>
                     <div style='display: flex; justify-content: space-between;'>
                         <div>
-                            <div style='font-size: 0.75rem; color: #555;'>Créditos Emitidos</div>
-                            <div style='font-size: 1.1rem; font-weight: bold; color: #2c3e50;'>
-                                {formatar_milhoes(creditos_emitidos)}
-                            </div>
+                            <div style='font-size: 0.8rem; color: #95a5a6;'>Receita Estimada</div>
+                            <div style='font-size: 1.2rem; font-weight: bold; color: #27ae60;'>US$ {formatar_moeda_curta(receita)}</div>
                         </div>
-                        <div style='text-align: center;'>
-                            <div style='font-size: 0.75rem; color: #555;'>Taxa de Venda</div>
-                            <div style='font-size: 1.1rem; font-weight: bold; color: #e74c3c;'>
-                                {formatar_br_dec(taxa_venda, 1)}%
-                            </div>
-                        </div>
-                        <div style='text-align: right;'>
-                            <div style='font-size: 0.75rem; color: #555;'>Créditos Vendidos</div>
-                            <div style='font-size: 1.1rem; font-weight: bold; color: #27ae60;'>
-                                {formatar_milhoes(creditos_vendidos)}
-                            </div>
+                        <div>
+                            <div style='font-size: 0.8rem; color: #95a5a6;'>Receita Anual</div>
+                            <div style='font-size: 1rem; color: #2c3e50;'>US$ {formatar_moeda_curta(receita_anual)}/ano</div>
                         </div>
                     </div>
                 </div>
-                
-                <div style='background: #f1f8e9; padding: 0.8rem; border-radius: 8px; margin: 1rem 0;'>
-                    <div style='font-size: 0.9rem; color: #689f38; font-weight: bold; margin-bottom: 0.3rem;'>
-                        💰 RECEITA GERADA
-                    </div>
-                    <div style='display: flex; justify-content: space-between;'>
-                        <div>
-                            <div style='font-size: 0.75rem; color: #555;'>Receita Real (Vendida)</div>
-                            <div style='font-size: 1.1rem; font-weight: bold; color: #27ae60;'>
-                                US$ {formatar_moeda_curta(receita_real)}
-                            </div>
-                        </div>
-                        <div style='text-align: right;'>
-                            <div style='font-size: 0.75rem; color: #555;'>Potencial Restante</div>
-                            <div style='font-size: 0.9rem; color: #7f8c8d;'>
-                                US$ {formatar_moeda_curta(receita_potencial - receita_real)}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                
-                <div style='margin-top: 0.5rem;'>
-                    <div style='display: flex; justify-content: space-between; font-size: 0.75rem; color: #7f8c8d;'>
-                        <div>
-                            <span style='background: #e3f2fd; padding: 0.2rem 0.5rem; border-radius: 4px;'>
-                                📅 {story.get('ano_inicio', 'N/A') if story.get('ano_inicio') else 'N/A'}
-                            </span>
-                        </div>
-                        <div>
-                            <span style='background: #f3e5f5; padding: 0.2rem 0.5rem; border-radius: 4px;'>
-                                📋 {story.get('fonte', 'FAO').replace('. ', ' ')}
-                            </span>
-                        </div>
-                    </div>
+                <div style='color: #3498db; font-size: 0.8rem;'>
+                    <strong>Categoria:</strong> {story.get('categoria', 'Não especificada').title()} • 
+                    <strong>Fonte:</strong> {story.get('fonte', 'Dataset FAO')}
                 </div>
             </div>
             """, unsafe_allow_html=True)
     
-    # Estatísticas adicionais
-    st.markdown("---")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        # Taxa média de venda entre os 3
-        taxa_media = sum([
-            (s.get('creditos_retirados', 0) / s.get('creditos_emitidos', 1) * 100) 
-            for s in top_stories if s.get('creditos_emitidos', 0) > 0
-        ]) / len(top_stories) if top_stories else 0
-        st.metric("📊 Taxa Média de Venda", f"{formatar_br_dec(taxa_media, 1)}%")
-    
-    with col2:
-        # Total vendido pelos 3
-        total_vendido = sum(s.get('creditos_retirados', 0) for s in top_stories)
-        st.metric("💰 Total Vendido (3 projetos)", formatar_milhoes(total_vendido))
-    
-    with col3:
-        # Receita total gerada
-        receita_total = sum(s.get('creditos_retirados', 0) * 22.5 for s in top_stories)
-        st.metric("💵 Receita Total Gerada", f"US$ {formatar_moeda_curta(receita_total)}")
-    
     # Link para ver mais projetos
-    if len(projetos_com_vendas) > 3:
-        st.markdown(f"*📈 E outros {formatar_br_inteiro(len(projetos_com_vendas) - 3)} projetos que também venderam créditos...*")
-
-def create_timeline_chart(analysis):
-    """Cria gráfico de linha do tempo mostrando a evolução do mercado"""
-    if not analysis or 'timeline_data' not in analysis:
-        return
-    
-    timeline_data = analysis['timeline_data']
-    if not timeline_data['anos']:
-        return
-    
-    # Criar DataFrame para o gráfico
-    df_timeline = pd.DataFrame({
-        'Ano': timeline_data['anos'],
-        'Projetos Registrados': timeline_data['registrados'],
-        'Créditos Emitidos (milhares)': [x / 1000 for x in timeline_data['emitidos']],
-        'Créditos Vendidos (milhares)': [x / 1000 for x in timeline_data['aposentados']]
-    })
-    
-    # Criar gráfico de linha
-    fig = go.Figure()
-    
-    # Adicionar linha para projetos registrados
-    fig.add_trace(go.Scatter(
-        x=df_timeline['Ano'],
-        y=df_timeline['Projetos Registrados'],
-        mode='lines+markers',
-        name='Projetos Registrados',
-        line=dict(color='#3498db', width=3),
-        marker=dict(size=8),
-        yaxis='y'
-    ))
-    
-    # Adicionar linha para créditos emitidos
-    fig.add_trace(go.Scatter(
-        x=df_timeline['Ano'],
-        y=df_timeline['Créditos Emitidos (milhares)'],
-        mode='lines+markers',
-        name='Créditos Emitidos (milhares)',
-        line=dict(color='#2ecc71', width=3),
-        marker=dict(size=8),
-        yaxis='y2'
-    ))
-    
-    # Adicionar linha para créditos vendidos
-    fig.add_trace(go.Scatter(
-        x=df_timeline['Ano'],
-        y=df_timeline['Créditos Vendidos (milhares)'],
-        mode='lines+markers',
-        name='Créditos Vendidos (milhares)',
-        line=dict(color='#e74c3c', width=3),
-        marker=dict(size=8),
-        yaxis='y2'
-    ))
-    
-    # Configurar layout - CORRIGIDO: titlefont -> title_font
-    fig.update_layout(
-        title='📈 Evolução do Mercado de Carbono Agrícola',
-        xaxis=dict(
-            title='Ano',
-            tickmode='linear',
-            tick0=min(df_timeline['Ano']),
-            dtick=1
-        ),
-        yaxis=dict(
-            title='Projetos Registrados',
-            title_font=dict(color='#3498db'),
-            tickfont=dict(color='#3498db'),
-            side='left'
-        ),
-        yaxis2=dict(
-            title='Créditos (em milhares)',
-            title_font=dict(color='#2ecc71'),
-            tickfont=dict(color='#2ecc71'),
-            overlaying='y',
-            side='right'
-        ),
-        hovermode='x unified',
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1
-        ),
-        plot_bgcolor='white',
-        height=400
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
+    if len(success_stories) > 4:
+        st.markdown(f"*📈 E outros {formatar_br_inteiro(len(success_stories) - 4)} projetos certificados...*")
 
 # =========================
 # PÁGINAS PRINCIPAIS
@@ -1344,7 +1042,7 @@ def render_opportunities_home(dataframes, analysis):
     # Calculadora de receita
     create_revenue_calculator(analysis)
     
-    # Métricas reais do mercado - REFINADAS
+    # Métricas reais do mercado
     st.markdown("## 📈 O Mercado Real em Números")
     
     if not analysis or 'estatisticas_gerais' not in analysis:
@@ -1354,100 +1052,57 @@ def render_opportunities_home(dataframes, analysis):
     stats = analysis['estatisticas_gerais']
     
     # Formatar valores para exibição
-    total_projetos_com_creditos = stats.get('total_projetos_com_creditos', 0)
-    paises_com_projetos = stats.get('paises_com_projetos', 0)
-    total_creditos = stats.get('total_creditos', 0)
-    total_aposentado = stats.get('total_aposentado', 0)
-    receita_real = stats.get('receita_real', 0)
-    receita_potencial = stats.get('receita_potencial', 0)
+    receita_estimada_fmt = formatar_moeda_curta(stats.get('receita_estimada', 0))
     receita_media_por_projeto = stats.get('receita_media_por_projeto', 0)
-    taxa_aposentadoria = stats.get('taxa_aposentadoria', 0)
-    
-    # Formatar valores para exibição
-    total_creditos_fmt = formatar_milhoes(total_creditos)
-    total_aposentado_fmt = formatar_milhoes(total_aposentado)
-    receita_real_fmt = formatar_moeda_curta(receita_real)
-    receita_potencial_fmt = formatar_moeda_curta(receita_potencial)
     receita_media_fmt = formatar_moeda_curta(receita_media_por_projeto)
     
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("💰 Projetos com Créditos", 
-                 formatar_br_inteiro(total_projetos_com_creditos), 
-                 f"{formatar_br_inteiro(paises_com_projetos)} países")
-    
+        st.metric("💰 Projetos com Créditos", formatar_br_inteiro(stats.get('total_projetos_com_creditos', 0)), 
+                 f"{stats.get('paises_com_projetos', 0)} países")
     with col2:
-        st.metric("🌱 Créditos Emitidos", 
-                 total_creditos_fmt, 
-                 f"≈ {total_creditos_fmt} tCO2")
-    
+        st.metric("🌱 Créditos Emitidos", formatar_milhoes(stats.get('total_creditos', 0)), 
+                 f"≈ {formatar_milhoes(stats.get('total_creditos', 0))} tCO2")
     with col3:
-        # RECEITA REAL (baseada nos créditos vendidos/aposentados)
-        st.metric("💵 Receita Real (Vendida)", 
-                 f"US$ {receita_real_fmt}", 
-                 f"Baseada em {total_aposentado_fmt} créditos vendidos")
-    
+        # Usar US$ milhões/mil aqui
+        st.metric("💵 Receita Gerada", f"US$ {receita_estimada_fmt}", 
+                 f"Preço médio: US${formatar_br_dec(22.5, 1)}/tCO2")
     with col4:
-        st.metric("🏆 Média por Projeto", 
-                 f"US$ {receita_media_fmt}",
-                 f"Receita real / projeto")
-    
-    # RECEITA POTENCIAL (separada)
-    st.markdown("---")
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.metric("📊 Receita Potencial (Total)", 
-                 f"US$ {receita_potencial_fmt}", 
-                 f"Se todos os {total_creditos_fmt} créditos fossem vendidos")
-    
-    with col2:
-        st.metric("📈 Potencial por Projeto", 
-                 f"US$ {formatar_moeda_curta(receita_potencial / max(1, total_projetos_com_creditos))}",
-                 f"Receita potencial / projeto")
+        st.metric("🏆 Média por Projeto", f"US$ {receita_media_fmt}")
     
     # Gráfico de créditos emitidos vs aposentados
-    st.markdown("## 🔄 Créditos Emitidos vs. Vendidos (Aposentados)")
+    st.markdown("## 🔄 Créditos Emitidos vs. Aposentados")
     
     comparativo = analysis.get('comparativo_emitidos_vs_aposentados', {'total_emitido': 0, 'total_aposentado': 0})
     emitidos = comparativo.get('total_emitido', 0)
     aposentados = comparativo.get('total_aposentado', 0)
-    
-    # Corrigir taxa de aposentadoria se for muito baixa
-    if taxa_aposentadoria < 0.1 and emitidos > 0:
-        taxa_aposentadoria = (aposentados / emitidos * 100)
+    taxa_aposentadoria = (aposentados / emitidos * 100) if emitidos > 0 else 0
     
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("📈 Total Emitido", total_creditos_fmt)
+        st.metric("📈 Total Emitido", formatar_milhoes(emitidos))
     with col2:
-        st.metric("📉 Total Vendido", total_aposentado_fmt)
+        st.metric("📉 Total Aposentado", formatar_milhoes(aposentados))
     with col3:
-        st.metric("📊 Taxa de Venda", f"{formatar_br_dec(taxa_aposentadoria, 3)}%")
+        st.metric("📊 Taxa de Aposentadoria", f"{formatar_br_dec(taxa_aposentadoria, 1)}%")
     
-    # Gráfico de barras comparativo
+    # Gráfico de barras
     dados_comparativo = pd.DataFrame({
-        'Tipo': ['Emitidos', 'Vendidos (Aposentados)'],
+        'Tipo': ['Emitidos', 'Aposentados'],
         'Créditos (milhões)': [emitidos / 1000000, aposentados / 1000000],
-        'Formato': [total_creditos_fmt, total_aposentado_fmt]
+        'Formato': [formatar_milhoes(emitidos), formatar_milhoes(aposentados)]
     })
     
     fig = px.bar(dados_comparativo, x='Tipo', y='Créditos (milhões)',
-                 title='Comparação entre Créditos Emitidos e Vendidos',
+                 title='Comparação entre Créditos Emitidos e Aposentados',
                  color='Tipo',
-                 color_discrete_map={'Emitidos': '#2ecc71', 'Vendidos (Aposentados)': '#e74c3c'},
+                 color_discrete_map={'Emitidos': '#2ecc71', 'Aposentados': '#3498db'},
                  text='Formato')
     
     fig.update_traces(textposition='outside')
     fig.update_layout(yaxis_title='Créditos (em milhões)')
     st.plotly_chart(fig, use_container_width=True)
-    
-    # LINHA DO TEMPO - EVOLUÇÃO DO MERCADO
-    st.markdown("## 📅 Evolução do Mercado ao Longo do Tempo")
-    st.info("💡 **Linha do tempo mostra o crescimento do mercado de carbono agrícola**")
-    
-    create_timeline_chart(analysis)
     
     # Casos de sucesso reais
     create_success_stories_from_data(analysis)
@@ -1675,7 +1330,7 @@ def render_project_explorer(dataframes, sheet_names, analysis):
                     )
                     total_retirados = filtered_df[col_info['creditos_retirados']].sum()
                     taxa_retirados = (total_retirados / total_creditos * 100) if total_creditos > 0 else 0
-                    st.metric("📉 Taxa Vendidos", f"{formatar_br_dec(taxa_retirados, 1)}%")
+                    st.metric("📉 Taxa Aposentados", f"{formatar_br_dec(taxa_retirados, 1)}%")
         
         # Mostrar dados
         if len(filtered_df) > 0:
@@ -1848,7 +1503,7 @@ def render_market_statistics(analysis):
         st.metric("🌍 Países", stats.get('paises_com_projetos', 0))
     
     # Comparativo créditos emitidos vs aposentados
-    st.markdown("### 🔄 Comparativo Créditos Emitidos vs. Vendidos")
+    st.markdown("### 🔄 Comparativo Créditos Emitidos vs. Aposentados")
     
     comparativo = analysis.get('comparativo_emitidos_vs_aposentados', {'total_emitido': 0, 'total_aposentado': 0})
     col1, col2, col3, col4 = st.columns(4)
@@ -1856,50 +1511,29 @@ def render_market_statistics(analysis):
     with col1:
         st.metric("📈 Total Emitido", formatar_milhoes(comparativo.get('total_emitido', 0)))
     with col2:
-        st.metric("📉 Total Vendido", formatar_milhoes(comparativo.get('total_aposentado', 0)))
+        st.metric("📉 Total Aposentado", formatar_milhoes(comparativo.get('total_aposentado', 0)))
     with col3:
         total_emitido = comparativo.get('total_emitido', 0)
         total_aposentado = comparativo.get('total_aposentado', 0)
         taxa = (total_aposentado / total_emitido * 100) if total_emitido > 0 else 0
-        st.metric("📊 Taxa de Venda", f"{formatar_br_dec(taxa, 3)}%")
+        st.metric("📊 Taxa de Aposentadoria", f"{formatar_br_dec(taxa, 1)}%")
     with col4:
         creditos_disponiveis = total_emitido - total_aposentado
         st.metric("💎 Créditos Disponíveis", formatar_milhoes(creditos_disponiveis))
     
     # Gráfico de pizza
     dados_pizza = pd.DataFrame({
-        'Status': ['Emitidos e Disponíveis', 'Vendidos'],
+        'Status': ['Emitidos e Disponíveis', 'Aposentados'],
         'Créditos': [creditos_disponiveis, total_aposentado]
     })
     
     fig = px.pie(dados_pizza, values='Créditos', names='Status',
                  title='Distribuição de Créditos por Status',
                  color='Status',
-                 color_discrete_map={'Emitidos e Disponíveis': '#2ecc71', 'Vendidos': '#e74c3c'})
+                 color_discrete_map={'Emitidos e Disponíveis': '#2ecc71', 'Aposentados': '#3498db'})
     
     fig.update_traces(textinfo='percent+label')
     st.plotly_chart(fig, use_container_width=True)
-    
-    # RECEITAS DETALHADAS
-    st.markdown("### 💰 Análise de Receitas")
-    
-    receita_real = stats.get('receita_real', 0)
-    receita_potencial = stats.get('receita_potencial', 0)
-    preco_medio = stats.get('preco_medio', 22.5)
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("💰 Receita Real (Vendida)", 
-                 f"US$ {formatar_moeda_curta(receita_real)}",
-                 f"Baseada em {formatar_milhoes(stats.get('total_aposentado', 0))} créditos vendidos")
-    with col2:
-        st.metric("📈 Receita Potencial (Total)", 
-                 f"US$ {formatar_moeda_curta(receita_potencial)}",
-                 f"Se todos os créditos fossem vendidos")
-    with col3:
-        st.metric("🏷️ Preço Médio", 
-                 f"US$ {formatar_br_dec(preco_medio, 2)}/tCO2",
-                 "Baseado em dados de mercado")
     
     # Taxas de sequestro reais
     st.markdown("### 📈 Taxas Reais de Sequestro (tCO2/ha/ano)")
@@ -1944,7 +1578,7 @@ def render_how_to_participate():
     ### 💡 Dicas Baseadas em Dados Reais
     
     - **Foco em projetos que já emitiram créditos** - Eles têm metodologias testadas
-    - **Analise a taxa de venda (aposentadoria)** - Indica demanda real do mercado
+    - **Analise a taxa de aposentadoria** - Indica demanda real do mercado
     - **Considere o padrão mais usado em sua região** - Facilita a certificação
     - **Calcule com base em dados reais** - Use nossa calculadora baseada em projetos existentes
     
@@ -2018,16 +1652,13 @@ def main():
                     'total_projetos': 0,
                     'total_projetos_com_creditos': 0,
                     'total_creditos': 0,
-                    'total_aposentado': 0,
-                    'receita_potencial': 0,
-                    'receita_real': 0,
-                    'receita_media_por_projeto': 0,
+                    'receita_estimada': 0,
                     'paises_com_projetos': 0,
                     'casos_sucesso_encontrados': 0,
+                    'receita_media_por_projeto': 0,
                     'taxa_aposentadoria': 0,
                     'creditos_emitidos': 0,
-                    'creditos_aposentados': 0,
-                    'preco_medio': 22.5
+                    'creditos_aposentados': 0
                 },
                 'projetos_por_pais': {},
                 'taxas_sequestro_reais': {},
@@ -2036,7 +1667,6 @@ def main():
                 'metodologias_populares': {},
                 'standards_mais_utilizados': {},
                 'comparativo_emitidos_vs_aposentados': {'total_emitido': 0, 'total_aposentado': 0},
-                'timeline_data': {'anos': [], 'registrados': [], 'emitidos': [], 'aposentados': []},
                 'categorias_projetos': {
                     'agricultura': {'total': 0, 'creditos': 0, 'area_total': 0, 'projetos_com_creditos': 0},
                     'agroflorestal': {'total': 0, 'creditos': 0, 'area_total': 0, 'projetos_com_creditos': 0},
@@ -2071,9 +1701,9 @@ def main():
         # Estatísticas rápidas
         if analysis and 'estatisticas_gerais' in analysis:
             stats = analysis['estatisticas_gerais']
+            # Usar get() para evitar KeyError
             total_projetos_com_creditos = stats.get('total_projetos_com_creditos', 0)
             total_creditos = stats.get('total_creditos', 0)
-            total_aposentado = stats.get('total_aposentado', 0)
             paises_com_projetos = stats.get('paises_com_projetos', 0)
             taxa_aposentadoria = stats.get('taxa_aposentadoria', 0)
             
@@ -2081,9 +1711,8 @@ def main():
             st.info(f"""
             **{formatar_br_inteiro(total_projetos_com_creditos)}** projetos com créditos  
             **{formatar_milhoes(total_creditos)}** créditos emitidos  
-            **{formatar_milhoes(total_aposentado)}** créditos vendidos  
             **{paises_com_projetos}** países  
-            **{formatar_br_dec(taxa_aposentadoria, 3)}%** taxa de venda
+            **{formatar_br_dec(taxa_aposentadoria, 1)}%** aposentados
             """)
         else:
             st.markdown("### 📈 Dados Reais")
@@ -2119,15 +1748,12 @@ def create_footer(analysis):
     
     if analysis and 'estatisticas_gerais' in analysis:
         stats = analysis['estatisticas_gerais']
-        receita_real = stats.get('receita_real', 0)
-        receita_potencial = stats.get('receita_potencial', 0)
+        receita_estimada = stats.get('receita_estimada', 0)
         total_projetos_com_creditos = stats.get('total_projetos_com_creditos', 0)
         total_creditos = stats.get('total_creditos', 0)
-        total_aposentado = stats.get('total_aposentado', 0)
         taxa_aposentadoria = stats.get('taxa_aposentadoria', 0)
         
-        receita_real_fmt = formatar_moeda_curta(receita_real)
-        receita_potencial_fmt = formatar_moeda_curta(receita_potencial)
+        receita_fmt = formatar_moeda_curta(receita_estimada)
         
         st.markdown(f"""
         <div style='text-align: center; padding: 1rem;'>
@@ -2135,12 +1761,8 @@ def create_footer(analysis):
             <strong>🌱 Análise Baseada em Dados Reais FAO</strong> | 
             {formatar_br_inteiro(total_projetos_com_creditos)} projetos com créditos | 
             {formatar_milhoes(total_creditos)} créditos emitidos |
-            {formatar_milhoes(total_aposentado)} créditos vendidos |
-            {formatar_br_dec(taxa_aposentadoria, 3)}% taxa de venda
-            </p>
-            <p style='color: #95a5a6; font-size: 0.8rem;'>
-            💰 <strong>Receita Real:</strong> US$ {receita_real_fmt} | 
-            📈 <strong>Receita Potencial:</strong> US$ {receita_potencial_fmt}
+            {formatar_br_dec(taxa_aposentadoria, 1)}% aposentados |
+            US$ {receita_fmt} em receita
             </p>
             <p style='color: #95a5a6; font-size: 0.8rem;'>
             💡 Foco exclusivo em projetos que emitiram créditos de carbono. 
