@@ -1052,7 +1052,7 @@ def create_revenue_calculator(analysis):
                 st.write(f"**Investimento inicial:** US$ {formatar_moeda_curta(investment)}")
 
 def create_success_stories_from_data(analysis):
-    """Cria casos de sucesso 100% baseados em dados reais"""
+    """Cria casos de sucesso 100% baseados em dados reais - FOCADO EM PROJETOS QUE JÁ VENDERAM"""
     
     if not analysis:
         st.warning("📊 **Carregando análise...**")
@@ -1064,15 +1064,35 @@ def create_success_stories_from_data(analysis):
         st.warning("📊 **Analisando projetos...** Em breve mostraremos casos reais baseados no dataset.")
         return
     
-    # Limitar a 4 melhores casos
-    top_stories = success_stories[:4]
+    # FILTRAR: Somente projetos que já aposentaram créditos (venderam)
+    projetos_com_vendas = [
+        story for story in success_stories 
+        if story.get('creditos_retirados', 0) > 0 and story.get('creditos_emitidos', 0) > 0
+    ]
     
-    st.markdown("## 📚 Casos Reais de Projetos que Geram Créditos")
-    st.info(f"💡 **Baseado em {formatar_br_inteiro(len(success_stories))} projetos certificados do dataset FAO**")
+    if not projetos_com_vendas:
+        st.info("📊 **Busquei, mas nenhum projeto encontrado com créditos já vendidos.** Isso mostra que o mercado ainda está em crescimento!")
+        return
     
-    cols = st.columns(2)
+    # ORDENAR: Por taxa de aposentadoria (projetos que mais venderam em %)
+    projetos_com_vendas.sort(
+        key=lambda x: (x.get('creditos_retirados', 0) / x.get('creditos_emitidos', 0) * 100) 
+        if x.get('creditos_emitidos', 0) > 0 else 0,
+        reverse=True
+    )
+    
+    # Limitar a 3 melhores casos (os que mais venderam em porcentagem)
+    top_stories = projetos_com_vendas[:3]
+    
+    st.markdown("## 📚 Casos Reais de Projetos que JÁ VENDERAM Créditos")
+    
+    col1, col2 = st.columns(2)
+    col1.info(f"💡 **Baseado em {formatar_br_inteiro(len(projetos_com_vendas))} projetos que já venderam créditos**")
+    col2.success(f"🏆 **Mostrando os 3 que mais venderam (em %)**")
+    
+    cols = st.columns(3)
     for i, story in enumerate(top_stories):
-        with cols[i % 2]:
+        with cols[i]:
             # Ícone baseado na categoria
             icon_map = {
                 'agricultura': '🌱',
@@ -1081,52 +1101,148 @@ def create_success_stories_from_data(analysis):
             }
             icon = icon_map.get(story.get('categoria', ''), '✅')
             
+            # Cálculos importantes
+            creditos_emitidos = story.get('creditos_emitidos', 0)
+            creditos_vendidos = story.get('creditos_retirados', 0)
+            taxa_venda = (creditos_vendidos / creditos_emitidos * 100) if creditos_emitidos > 0 else 0
+            area_hectares = story.get('area_hectares', 0)
+            
+            # Calcular receita real (baseada em créditos vendidos)
+            receita_real = creditos_vendidos * 22.5  # US$22.5/tCO2
+            receita_potencial = creditos_emitidos * 22.5
+            
             # Formatar descrição
-            descricao = f"Projeto certificado em {story.get('pais', 'Não especificado')}"
-            if story.get('area_hectares', 0) > 0:
-                descricao += f" com {formatar_br_inteiro(story['area_hectares'])} hectares"
-            if story.get('creditos_emitidos', 0) > 0:
-                descricao += f". Emitiu {formatar_milhoes(story['creditos_emitidos'])} créditos de carbono"
+            descricao = f"**{story.get('nome', 'Projeto Certificado')}**"
+            descricao += f"\n📍 {story.get('pais', 'Não especificado')}"
             
-            if story.get('creditos_retirados', 0) > 0:
-                taxa_aposent = story.get('taxa_aposentadoria_projeto', 0)
-                descricao += f" ({formatar_br_dec(taxa_aposent, 1)}% já vendidos)"
+            if area_hectares > 0:
+                descricao += f" | 📏 {formatar_br_inteiro(area_hectares)} ha"
             
-            # Calcular receita e formatar
-            receita_real = story.get('creditos_retirados', 0) * 22.5  # US$22.5/tCO2
-            receita_potencial = story.get('creditos_emitidos', 0) * 22.5
+            descricao += f"\n📊 {story.get('metodologia', 'Metodologia não especificada')}"
+            
+            # Estrelas de desempenho baseado na taxa de venda
+            estrelas = ""
+            if taxa_venda >= 80:
+                estrelas = "⭐⭐⭐⭐⭐"
+            elif taxa_venda >= 60:
+                estrelas = "⭐⭐⭐⭐"
+            elif taxa_venda >= 40:
+                estrelas = "⭐⭐⭐"
+            elif taxa_venda >= 20:
+                estrelas = "⭐⭐"
+            else:
+                estrelas = "⭐"
             
             st.markdown(f"""
-            <div style='background: white; padding: 1.5rem; border-radius: 10px; 
-                        box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin: 1rem 0; 
-                        border-top: 5px solid #27ae60;'>
+            <div style='background: linear-gradient(135deg, #ffffff, #f8f9fa); 
+                        padding: 1.5rem; border-radius: 15px; 
+                        box-shadow: 0 8px 16px rgba(46, 204, 113, 0.15); 
+                        margin: 0.5rem 0; 
+                        border-left: 6px solid #27ae60;
+                        border-top: 1px solid #e8f5e9;
+                        border-bottom: 1px solid #e8f5e9;
+                        height: 100%;'>
+                
                 <div style='display: flex; align-items: center; margin-bottom: 1rem;'>
-                    <div style='font-size: 2rem; margin-right: 1rem;'>{icon}</div>
-                    <h3 style='margin: 0; color: #2c3e50; font-size: 1.1rem;'>{story.get('nome', 'Projeto Certificado')}</h3>
-                </div>
-                <p style='color: #7f8c8d; line-height: 1.6; font-size: 0.9rem;'>{descricao}</p>
-                <div style='background: #f8f9fa; padding: 1rem; border-radius: 5px; margin: 1rem 0;'>
-                    <div style='display: flex; justify-content: space-between;'>
-                        <div>
-                            <div style='font-size: 0.8rem; color: #95a5a6;'>Receita Real (vendida)</div>
-                            <div style='font-size: 1.2rem; font-weight: bold; color: #27ae60;'>US$ {formatar_moeda_curta(receita_real)}</div>
-                        </div>
-                        <div>
-                            <div style='font-size: 0.8rem; color: #95a5a6;'>Receita Potencial</div>
-                            <div style='font-size: 1rem; color: #2c3e50;'>US$ {formatar_moeda_curta(receita_potencial)}</div>
+                    <div style='font-size: 2.5rem; margin-right: 1rem;'>{icon}</div>
+                    <div>
+                        <h4 style='margin: 0; color: #2c3e50; font-size: 1.1rem;'>
+                            {story.get('nome', 'Projeto Certificado')[:40]}{'...' if len(story.get('nome', '')) > 40 else ''}
+                        </h4>
+                        <div style='color: #7f8c8d; font-size: 0.9rem; margin-top: 0.2rem;'>
+                            {story.get('categoria', '').title()} • {story.get('pais', 'Não especificado')}
                         </div>
                     </div>
                 </div>
-                <div style='color: #3498db; font-size: 0.8rem;'>
-                    <strong>Categoria:</strong> {story.get('categoria', 'Não especificada').title()} • 
-                    <strong>Fonte:</strong> {story.get('fonte', 'Dataset FAO')}
+                
+                <div style='background: #e8f5e9; padding: 0.8rem; border-radius: 8px; margin: 1rem 0;'>
+                    <div style='font-size: 0.9rem; color: #27ae60; font-weight: bold; margin-bottom: 0.3rem;'>
+                        🏆 DESEMPENHO COMERCIAL {estrelas}
+                    </div>
+                    <div style='display: flex; justify-content: space-between;'>
+                        <div>
+                            <div style='font-size: 0.75rem; color: #555;'>Créditos Emitidos</div>
+                            <div style='font-size: 1.1rem; font-weight: bold; color: #2c3e50;'>
+                                {formatar_milhoes(creditos_emitidos)}
+                            </div>
+                        </div>
+                        <div style='text-align: center;'>
+                            <div style='font-size: 0.75rem; color: #555;'>Taxa de Venda</div>
+                            <div style='font-size: 1.1rem; font-weight: bold; color: #e74c3c;'>
+                                {formatar_br_dec(taxa_venda, 1)}%
+                            </div>
+                        </div>
+                        <div style='text-align: right;'>
+                            <div style='font-size: 0.75rem; color: #555;'>Créditos Vendidos</div>
+                            <div style='font-size: 1.1rem; font-weight: bold; color: #27ae60;'>
+                                {formatar_milhoes(creditos_vendidos)}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div style='background: #f1f8e9; padding: 0.8rem; border-radius: 8px; margin: 1rem 0;'>
+                    <div style='font-size: 0.9rem; color: #689f38; font-weight: bold; margin-bottom: 0.3rem;'>
+                        💰 RECEITA GERADA
+                    </div>
+                    <div style='display: flex; justify-content: space-between;'>
+                        <div>
+                            <div style='font-size: 0.75rem; color: #555;'>Receita Real (Vendida)</div>
+                            <div style='font-size: 1.1rem; font-weight: bold; color: #27ae60;'>
+                                US$ {formatar_moeda_curta(receita_real)}
+                            </div>
+                        </div>
+                        <div style='text-align: right;'>
+                            <div style='font-size: 0.75rem; color: #555;'>Potencial Restante</div>
+                            <div style='font-size: 0.9rem; color: #7f8c8d;'>
+                                US$ {formatar_moeda_curta(receita_potencial - receita_real)}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div style='margin-top: 0.5rem;'>
+                    <div style='display: flex; justify-content: space-between; font-size: 0.75rem; color: #7f8c8d;'>
+                        <div>
+                            <span style='background: #e3f2fd; padding: 0.2rem 0.5rem; border-radius: 4px;'>
+                                📅 {story.get('ano_inicio', 'N/A') if story.get('ano_inicio') else 'N/A'}
+                            </span>
+                        </div>
+                        <div>
+                            <span style='background: #f3e5f5; padding: 0.2rem 0.5rem; border-radius: 4px;'>
+                                📋 {story.get('fonte', 'FAO').replace('. ', ' ')}
+                            </span>
+                        </div>
+                    </div>
                 </div>
             </div>
             """, unsafe_allow_html=True)
     
+    # Estatísticas adicionais
+    st.markdown("---")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        # Taxa média de venda entre os 3
+        taxa_media = sum([
+            (s.get('creditos_retirados', 0) / s.get('creditos_emitidos', 1) * 100) 
+            for s in top_stories if s.get('creditos_emitidos', 0) > 0
+        ]) / len(top_stories) if top_stories else 0
+        st.metric("📊 Taxa Média de Venda", f"{formatar_br_dec(taxa_media, 1)}%")
+    
+    with col2:
+        # Total vendido pelos 3
+        total_vendido = sum(s.get('creditos_retirados', 0) for s in top_stories)
+        st.metric("💰 Total Vendido (3 projetos)", formatar_milhoes(total_vendido))
+    
+    with col3:
+        # Receita total gerada
+        receita_total = sum(s.get('creditos_retirados', 0) * 22.5 for s in top_stories)
+        st.metric("💵 Receita Total Gerada", f"US$ {formatar_moeda_curta(receita_total)}")
+    
     # Link para ver mais projetos
-    if len(success_stories) > 4:
-        st.markdown(f"*📈 E outros {formatar_br_inteiro(len(success_stories) - 4)} projetos certificados...*")
+    if len(projetos_com_vendas) > 3:
+        st.markdown(f"*📈 E outros {formatar_br_inteiro(len(projetos_com_vendas) - 3)} projetos que também venderam créditos...*")
 
 def create_timeline_chart(analysis):
     """Cria gráfico de linha do tempo mostrando a evolução do mercado"""
@@ -1192,13 +1308,13 @@ def create_timeline_chart(analysis):
         ),
         yaxis=dict(
             title='Projetos Registrados',
-            title_font=dict(color='#3498db'),  # CORRIGIDO AQUI
+            title_font=dict(color='#3498db'),
             tickfont=dict(color='#3498db'),
             side='left'
         ),
         yaxis2=dict(
             title='Créditos (em milhares)',
-            title_font=dict(color='#2ecc71'),  # CORRIGIDO AQUI
+            title_font=dict(color='#2ecc71'),
             tickfont=dict(color='#2ecc71'),
             overlaying='y',
             side='right'
