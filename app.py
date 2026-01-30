@@ -94,7 +94,7 @@ SHEET_CONFIG = {
     "5. Agroforestry-AR & Grassland": {"type": "projetos", "icon": "🌳", "color": "#27ae60", "has_yearly_data": True, "country_column": "Country", "revenue_focus": True},
     "6. Energy and Other": {"type": "projetos", "icon": "⚡", "color": "#f39c12", "has_yearly_data": True, "country_column": "Country", "revenue_focus": True},
     "7. Plan Vivo, Acorn, Social C": {"type": "padrões", "icon": "🌍", "color": "#1abc9c", "main_column": "Standard", "country_column": "Country", "revenue_focus": True},
-    "8. Puro.earth": {"type": "projetos", "icon": "🔥", "color": "#d35400", "main_column": "FAO Project name", "revenue_focus": True},
+    "8. Puro.earth": {"type": "projetos", "icon": "🔥", "color": "#d35400", "revenue_focus": True},
     "9. Nori and BCarbon": {"type": "projetos", "icon": "🌾", "color": "#16a085", "main_column": "Standard", "country_column": "Country", "revenue_focus": True}
 }
 
@@ -137,7 +137,7 @@ def clean_column_names(df):
         # Se for coluna Unnamed ou vazia, tentar inferir nome
         if pd.isna(col) or col_str.strip() == '' or 'Unnamed' in col_str:
             # Tentar inferir nome baseado no conteúdo das primeiras linhas
-            possible_name = infer_column_name(df_clean[col])
+            possible_name = infer_column_name(df_clean, col)
             if possible_name:
                 new_names[col] = possible_name
             else:
@@ -152,38 +152,49 @@ def clean_column_names(df):
     
     return df_clean
 
-def infer_column_name(series):
+def infer_column_name(df, col_idx):
     """
-    Tenta inferir o nome da coluna baseado no conteúdo
+    Tenta inferir o nome da coluna baseado no conteúdo das primeiras linhas
     """
-    if series.empty:
+    if df.empty or col_idx not in df.columns:
         return None
     
-    # Pegar primeiros valores não nulos
-    non_null_values = series.dropna().head(5).astype(str).tolist()
+    # Pegar os primeiros valores não nulos da coluna
+    non_null_values = df[col_idx].dropna().head(5).astype(str).tolist()
     
-    # Mapear padrões comuns
-    patterns = {
-        'project': ['project', 'projeto', 'name', 'nome'],
-        'country': ['country', 'pais', 'location', 'region'],
-        'method': ['method', 'methodology', 'metodologia', 'tipo'],
-        'credits': ['credit', 'credits', 'credito', 'volume', 'issued'],
-        'area': ['area', 'hectare', 'ha', 'land', 'size'],
-        'price': ['price', 'preco', 'value', 'valor', 'cost']
-    }
+    # Verificar se o primeiro valor parece ser um cabeçalho (texto curto, sem números, sem pontuação excessiva)
+    if non_null_values:
+        first_value = non_null_values[0].strip()
+        
+        # Se o valor parece ser um cabeçalho de coluna (texto descritivo)
+        if (len(first_value) > 2 and len(first_value) < 100 and 
+            not first_value.isdigit() and 
+            not any(char.isdigit() for char in first_value[:10]) and
+            'http' not in first_value.lower()):
+            return first_value
     
-    # Verificar se algum valor contém palavras-chave
+    # Se não encontrou, verificar padrões nos valores
     for value in non_null_values:
         value_lower = value.lower()
-        for key, keywords in patterns.items():
-            for keyword in keywords:
-                if keyword in value_lower:
-                    return f"FAO {key.capitalize()}"
-    
-    # Se o próprio conteúdo parecer ser um cabeçalho
-    for value in non_null_values:
-        if len(value) > 3 and len(value) < 50 and not any(c.isdigit() for c in value):
-            return value
+        
+        # Mapear padrões comuns de cabeçalhos
+        header_patterns = {
+            'project': ['project', 'projeto', 'name', 'nome'],
+            'country': ['country', 'pais', 'location', 'region'],
+            'method': ['method', 'methodology', 'metodologia', 'tipo'],
+            'credits': ['credit', 'credits', 'credito', 'volume', 'issued', 'carbon'],
+            'area': ['area', 'hectare', 'ha', 'land', 'size'],
+            'price': ['price', 'preco', 'value', 'valor', 'cost'],
+            'standard': ['standard', 'registro', 'registry'],
+            'platform': ['platform', 'plataforma'],
+            'description': ['description', 'descrição', 'descricao'],
+            'type': ['type', 'tipo', 'category', 'categoria']
+        }
+        
+        for key, patterns in header_patterns.items():
+            for pattern in patterns:
+                if pattern in value_lower and len(value) < 50:
+                    return value
     
     return None
 
@@ -196,23 +207,44 @@ def clean_dataframe(df):
     
     df_clean = df.copy()
     
-    # 1. Remover colunas completamente vazias
-    df_clean = df_clean.dropna(axis=1, how='all')
+    # 1. Primeiro, verificar se a primeira linha contém cabeçalhos reais
+    # Se todas as colunas são Unnamed e a primeira linha tem valores textuais curtos,
+    # usar a primeira linha como cabeçalho
+    all_unnamed = all('Unnamed' in str(col) for col in df_clean.columns)
     
-    # 2. Remover colunas que são apenas índices repetidos
-    cols_to_drop = []
-    for col in df_clean.columns:
-        col_str = str(col)
-        # Remover colunas que são apenas números sequenciais (provavelmente índices do Excel)
-        if 'Unnamed' in col_str and df_clean[col].dtype in ['int64', 'float64']:
-            unique_vals = df_clean[col].nunique()
-            if unique_vals == len(df_clean) and df_clean[col].min() == 0 and df_clean[col].max() == len(df_clean) - 1:
-                cols_to_drop.append(col)
+    if all_unnamed and len(df_clean) > 0:
+        # Verificar se a primeira linha parece conter cabeçalhos
+        first_row = df_clean.iloc[0]
+        potential_headers = []
+        
+        for val in first_row:
+            val_str = str(val)
+            if (pd.notna(val) and 
+                len(val_str) > 2 and len(val_str) < 100 and
+                not val_str.isdigit() and
+                'http' not in val_str.lower()):
+                potential_headers.append(True)
+            else:
+                potential_headers.append(False)
+        
+        # Se mais da metade dos valores parecem ser cabeçalhos
+        if sum(potential_headers) > len(potential_headers) / 2:
+            # Usar a primeira linha como cabeçalho
+            new_columns = []
+            for i, val in enumerate(first_row):
+                if potential_headers[i]:
+                    new_columns.append(str(val).strip())
+                else:
+                    new_columns.append(f"Coluna_{i+1}")
+            
+            df_clean.columns = new_columns
+            df_clean = df_clean.iloc[1:].reset_index(drop=True)
     
-    df_clean = df_clean.drop(columns=cols_to_drop)
-    
-    # 3. Limpar nomes das colunas
+    # 2. Agora limpar nomes das colunas existentes
     df_clean = clean_column_names(df_clean)
+    
+    # 3. Remover colunas completamente vazias
+    df_clean = df_clean.dropna(axis=1, how='all')
     
     # 4. Remover linhas completamente vazias
     df_clean = df_clean.dropna(how='all')
@@ -250,7 +282,7 @@ def analyze_complete_dataset(dataframes):
         '5. Agroforestry-AR & Grassland': 'agroflorestal',
         '6. Energy and Other': 'energia',
         '7. Plan Vivo, Acorn, Social C': 'agroflorestal',
-        '8. Puro.earth': 'energia',
+        '8. Puro.earth': 'agricultura',  # Biochar é agricultura
         '9. Nori and BCarbon': 'agricultura'
     }
     
@@ -268,7 +300,7 @@ def analyze_complete_dataset(dataframes):
         analysis['categorias_projetos'][category]['total'] += len(df_clean)
         
         # Identificar colunas automaticamente
-        col_info = identify_columns(df_clean)
+        col_info = identify_columns(df_clean, sheet_name)
         
         # Processar cada projeto para extrair dados
         for idx, row in df_clean.iterrows():
@@ -340,7 +372,7 @@ def analyze_complete_dataset(dataframes):
     
     return analysis
 
-def identify_columns(df):
+def identify_columns(df, sheet_name):
     """
     Identifica automaticamente as colunas relevantes no dataframe
     Retorna dicionário com os nomes das colunas identificadas
@@ -359,38 +391,72 @@ def identify_columns(df):
     if df is None or df.empty:
         return columns
     
-    # Converter todos os nomes de coluna para string e lowercase
-    column_map = {}
-    for col in df.columns:
-        col_str = str(col).strip()
-        column_map[col_str.lower()] = col
+    # Para abas específicas, usar mapeamento conhecido baseado no relatório
+    if sheet_name == "8. Puro.earth":
+        # Baseado no relatório: Unnamed: 0 = Project name, Unnamed: 1 = Method
+        for col in df.columns:
+            col_str = str(col).lower()
+            if 'project' in col_str or 'name' in col_str or col == 'Unnamed: 0':
+                columns['nome'] = col
+            elif 'method' in col_str or col == 'Unnamed: 1':
+                columns['metodologia'] = col
+            elif 'region' in col_str or col == 'Unnamed: 2':
+                columns['pais'] = col
+            elif 'credit' in col_str or 'total issued' in col_str:
+                columns['creditos'] = col
     
-    # Procurar por padrões nos nomes das colunas
-    for pattern_dict in [
-        {'key': 'nome', 'patterns': ['project', 'projeto', 'name', 'nome', 'title', 'titulo']},
-        {'key': 'pais', 'patterns': ['country', 'pais', 'location', 'region', 'região']},
-        {'key': 'area', 'patterns': ['area', 'hectare', 'ha', 'land', 'size', 'tamanho', 'hectares']},
-        {'key': 'creditos', 'patterns': ['credit', 'credits', 'credito', 'volume', 'amount', 'total', 'co2', 'carbon']},
-        {'key': 'duracao', 'patterns': ['year', 'duration', 'period', 'lifetime', 'time', 'anos', 'duração']},
-        {'key': 'metodologia', 'patterns': ['method', 'methodology', 'metodologia', 'type', 'tipo', 'practice', 'pratica']},
-        {'key': 'preco', 'patterns': ['price', 'preco', 'value', 'valor', 'cost', 'custo']},
-        {'key': 'data', 'patterns': ['date', 'data', 'year', 'ano']}
-    ]:
-        key = pattern_dict['key']
-        patterns = pattern_dict['patterns']
-        
-        for pattern in patterns:
-            for col_lower, col_original in column_map.items():
-                if pattern in col_lower and columns[key] is None:
-                    columns[key] = col_original
-                    break
-            if columns[key] is not None:
-                break
+    elif sheet_name == "9. Nori and BCarbon":
+        # Baseado no relatório: tem colunas Standard, Project name, Country
+        for col in df.columns:
+            col_str = str(col).lower()
+            if 'standard' in col_str:
+                columns['metodologia'] = col
+            elif 'project' in col_str or 'name' in col_str:
+                columns['nome'] = col
+            elif 'country' in col_str:
+                columns['pais'] = col
+            elif 'credit' in col_str:
+                columns['creditos'] = col
     
-    # Se não encontrou por nome, tentar por conteúdo das primeiras linhas
+    elif sheet_name == "7. Plan Vivo, Acorn, Social C":
+        # Baseado no relatório: tem colunas Standard, Project name, Country
+        for col in df.columns:
+            col_str = str(col).lower()
+            if 'standard' in col_str:
+                columns['metodologia'] = col
+            elif 'project' in col_str or 'name' in col_str:
+                columns['nome'] = col
+            elif 'country' in col_str:
+                columns['pais'] = col
+            elif 'credit' in col_str or 'issued' in col_str:
+                columns['creditos'] = col
+            elif 'land' in col_str or 'area' in col_str or 'ha' in col_str:
+                columns['area'] = col
+    
+    # Se não encontrou por mapeamento específico, tentar inferir geral
     if columns['nome'] is None:
         for col in df.columns:
-            col_str = str(col)
+            col_str = str(col).lower()
+            
+            # Procurar por padrões nos nomes das colunas
+            if 'project' in col_str or 'name' in col_str or 'nome' in col_str or 'projeto' in col_str:
+                columns['nome'] = col
+            elif 'country' in col_str or 'pais' in col_str or 'location' in col_str:
+                columns['pais'] = col
+            elif 'area' in col_str or 'hectare' in col_str or 'ha' in col_str or 'land' in col_str:
+                columns['area'] = col
+            elif 'credit' in col_str or 'carbon' in col_str or 'co2' in col_str or 'volume' in col_str:
+                columns['creditos'] = col
+            elif 'method' in col_str or 'methodology' in col_str or 'type' in col_str or 'tipo' in col_str:
+                columns['metodologia'] = col
+            elif 'year' in col_str or 'date' in col_str or 'ano' in col_str or 'data' in col_str:
+                columns['data'] = col
+            elif 'price' in col_str or 'value' in col_str or 'valor' in col_str:
+                columns['preco'] = col
+    
+    # Se ainda não encontrou, verificar pelo conteúdo das colunas
+    if columns['nome'] is None:
+        for col in df.columns:
             # Verificar se a coluna contém nomes de projetos
             sample_vals = df[col].dropna().head(5).astype(str).tolist()
             if any(len(v) > 10 and not v.isdigit() for v in sample_vals):
@@ -623,7 +689,7 @@ def calculate_potential_revenue(hectares, practice_type, analysis):
     return calculations
 
 def calculate_break_even(hectares, investment_cost, practice_type, analysis):
-    """Calcula ponto de equilíbrio baseado em dados reais"""
+    """Calcula ponto de equilibro baseado em dados reais"""
     revenue = calculate_potential_revenue(hectares, practice_type, analysis)
     
     annual_revenue = revenue['annual_revenue_avg']
@@ -916,7 +982,8 @@ def render_project_explorer(dataframes, sheet_names, analysis):
         paises_disponiveis = []
         
         for col in df.columns:
-            if any(word in str(col).lower() for word in ['country', 'pais', 'nation', 'location']):
+            col_str = str(col).lower()
+            if any(word in col_str for word in ['country', 'pais', 'nation', 'location', 'region']):
                 paises_unicos = df[col].dropna().unique()
                 for pais in paises_unicos:
                     if pais and str(pais).strip() and str(pais).lower() != 'nan':
@@ -944,7 +1011,8 @@ def render_project_explorer(dataframes, sheet_names, analysis):
         
         if selected_countries:
             for col in filtered_df.columns:
-                if any(word in str(col).lower() for word in ['country', 'pais', 'nation', 'location']):
+                col_str = str(col).lower()
+                if any(word in col_str for word in ['country', 'pais', 'nation', 'location', 'region']):
                     filtered_df = filtered_df[
                         filtered_df[col].apply(lambda x: get_country_name(str(x)) if pd.notna(x) else "").isin(selected_countries)
                     ]
@@ -954,45 +1022,35 @@ def render_project_explorer(dataframes, sheet_names, analysis):
         st.markdown(f"### {config.get('icon', '📊')} {selected_sheet}")
         st.markdown(f"**{formatar_br_inteiro(len(filtered_df))} projetos encontrados** • Dados extraídos do dataset FAO")
         
-        # Encontrar colunas mais relevantes (priorizar colunas com conteúdo significativo)
-        relevant_cols = []
+        # Mostrar nomes das colunas para debug (opcional)
+        with st.expander("📋 Ver nomes das colunas"):
+            st.write("Colunas disponíveis:")
+            for i, col in enumerate(filtered_df.columns):
+                st.write(f"{i}. {col}")
         
-        # Primeiro, identificar colunas que parecem ter conteúdo útil
-        content_rich_cols = []
-        for col in filtered_df.columns:
-            col_str = str(col)
-            # Ignorar colunas com nomes genéricos como "Coluna_X" se não tiverem conteúdo
-            if not col_str.startswith('Coluna_'):
-                non_null_count = filtered_df[col].notna().sum()
-                if non_null_count > 0:
-                    content_rich_cols.append((col, non_null_count))
-        
-        # Ordenar por quantidade de conteúdo
-        content_rich_cols.sort(key=lambda x: x[1], reverse=True)
-        
-        # Adicionar colunas prioritárias primeiro
-        priority_keywords = ['name', 'project', 'country', 'credit', 'issued', 'area', 'hectare', 'type', 'standard', 'method', 'price', 'value']
-        
-        for keyword in priority_keywords:
-            for col in filtered_df.columns:
-                col_str = str(col).lower()
-                if keyword in col_str and col not in relevant_cols:
-                    relevant_cols.append(col)
-        
-        # Adicionar outras colunas com conteúdo
-        for col, _ in content_rich_cols:
-            if col not in relevant_cols and len(relevant_cols) < 8:  # Limitar a 8 colunas
-                relevant_cols.append(col)
-        
-        # Se não encontrou colunas relevantes, usar todas
-        if not relevant_cols:
-            relevant_cols = filtered_df.columns.tolist()[:8]  # Limitar a 8 colunas
-        
-        # Mostrar dados (formatando colunas numéricas)
-        if relevant_cols and len(filtered_df) > 0:
-            display_df = filtered_df[relevant_cols].copy()
+        # Mostrar dados
+        if len(filtered_df) > 0:
+            # Limitar a um número razoável de colunas para exibição
+            display_cols = []
             
-            # Identificar e formatar colunas numéricas
+            # Priorizar colunas com nomes significativos (não "Coluna_X")
+            for col in filtered_df.columns:
+                col_str = str(col)
+                if not col_str.startswith('Coluna_'):
+                    display_cols.append(col)
+            
+            # Se ainda tiver muitas colunas, limitar
+            if len(display_cols) > 8:
+                display_cols = display_cols[:8]
+            
+            # Se não encontrou colunas boas, usar as primeiras
+            if not display_cols and len(filtered_df.columns) > 0:
+                display_cols = filtered_df.columns[:8].tolist()
+            
+            # Preparar DataFrame para exibição (formatando números)
+            display_df = filtered_df[display_cols].copy()
+            
+            # Formatar colunas numéricas
             for col in display_df.columns:
                 try:
                     # Tentar converter para numérico
@@ -1007,7 +1065,7 @@ def render_project_explorer(dataframes, sheet_names, analysis):
                 except:
                     pass
             
-            # Mostrar dataframe com informações úteis
+            # Mostrar dataframe
             st.dataframe(
                 display_df.head(100),  # Limitar a 100 linhas para performance
                 use_container_width=True,
