@@ -94,7 +94,7 @@ SHEET_CONFIG = {
     "5. Agroforestry-AR & Grassland": {"type": "projetos", "icon": "🌳", "color": "#27ae60", "has_yearly_data": True, "country_column": "Country", "revenue_focus": True},
     "6. Energy and Other": {"type": "projetos", "icon": "⚡", "color": "#f39c12", "has_yearly_data": True, "country_column": "Country", "revenue_focus": True},
     "7. Plan Vivo, Acorn, Social C": {"type": "padrões", "icon": "🌍", "color": "#1abc9c", "main_column": "Standard", "country_column": "Country", "revenue_focus": True},
-    "8. Puro.earth": {"type": "projetos", "icon": "🔥", "color": "#d35400", "main_column": "Unnamed: 0", "revenue_focus": True},
+    "8. Puro.earth": {"type": "projetos", "icon": "🔥", "color": "#d35400", "main_column": "FAO Project name", "revenue_focus": True},
     "9. Nori and BCarbon": {"type": "projetos", "icon": "🌾", "color": "#16a085", "main_column": "Standard", "country_column": "Country", "revenue_focus": True}
 }
 
@@ -113,6 +113,114 @@ COUNTRY_TRANSLATIONS = {
     'malaysia': 'Malásia', 'southafrica': 'África do Sul', 'kenya': 'Quênia',
     'ethiopia': 'Etiópia', 'nigeria': 'Nigéria'
 }
+
+# =========================
+# FUNÇÕES AUXILIARES PARA LIMPEZA DE DADOS
+# =========================
+
+def clean_column_names(df):
+    """
+    Limpa e renomeia colunas do dataframe
+    """
+    if df is None or df.empty:
+        return df
+    
+    # Criar cópia para não modificar o original
+    df_clean = df.copy()
+    
+    # Lista de novos nomes para colunas "Unnamed"
+    new_names = {}
+    
+    for i, col in enumerate(df_clean.columns):
+        col_str = str(col)
+        
+        # Se for coluna Unnamed ou vazia, tentar inferir nome
+        if pd.isna(col) or col_str.strip() == '' or 'Unnamed' in col_str:
+            # Tentar inferir nome baseado no conteúdo das primeiras linhas
+            possible_name = infer_column_name(df_clean[col])
+            if possible_name:
+                new_names[col] = possible_name
+            else:
+                # Se não conseguir inferir, usar nome genérico
+                new_names[col] = f"Coluna_{i+1}"
+        # Limpar espaços e caracteres especiais
+        else:
+            new_names[col] = col_str.strip()
+    
+    # Renomear colunas
+    df_clean.rename(columns=new_names, inplace=True)
+    
+    return df_clean
+
+def infer_column_name(series):
+    """
+    Tenta inferir o nome da coluna baseado no conteúdo
+    """
+    if series.empty:
+        return None
+    
+    # Pegar primeiros valores não nulos
+    non_null_values = series.dropna().head(5).astype(str).tolist()
+    
+    # Mapear padrões comuns
+    patterns = {
+        'project': ['project', 'projeto', 'name', 'nome'],
+        'country': ['country', 'pais', 'location', 'region'],
+        'method': ['method', 'methodology', 'metodologia', 'tipo'],
+        'credits': ['credit', 'credits', 'credito', 'volume', 'issued'],
+        'area': ['area', 'hectare', 'ha', 'land', 'size'],
+        'price': ['price', 'preco', 'value', 'valor', 'cost']
+    }
+    
+    # Verificar se algum valor contém palavras-chave
+    for value in non_null_values:
+        value_lower = value.lower()
+        for key, keywords in patterns.items():
+            for keyword in keywords:
+                if keyword in value_lower:
+                    return f"FAO {key.capitalize()}"
+    
+    # Se o próprio conteúdo parecer ser um cabeçalho
+    for value in non_null_values:
+        if len(value) > 3 and len(value) < 50 and not any(c.isdigit() for c in value):
+            return value
+    
+    return None
+
+def clean_dataframe(df):
+    """
+    Limpa completamente um dataframe
+    """
+    if df is None or df.empty:
+        return df
+    
+    df_clean = df.copy()
+    
+    # 1. Remover colunas completamente vazias
+    df_clean = df_clean.dropna(axis=1, how='all')
+    
+    # 2. Remover colunas que são apenas índices repetidos
+    cols_to_drop = []
+    for col in df_clean.columns:
+        col_str = str(col)
+        # Remover colunas que são apenas números sequenciais (provavelmente índices do Excel)
+        if 'Unnamed' in col_str and df_clean[col].dtype in ['int64', 'float64']:
+            unique_vals = df_clean[col].nunique()
+            if unique_vals == len(df_clean) and df_clean[col].min() == 0 and df_clean[col].max() == len(df_clean) - 1:
+                cols_to_drop.append(col)
+    
+    df_clean = df_clean.drop(columns=cols_to_drop)
+    
+    # 3. Limpar nomes das colunas
+    df_clean = clean_column_names(df_clean)
+    
+    # 4. Remover linhas completamente vazias
+    df_clean = df_clean.dropna(how='all')
+    
+    # 5. Resetar índice
+    df_clean = df_clean.reset_index(drop=True)
+    
+    return df_clean
 
 # =========================
 # SISTEMA DE ANÁLISE COMPLETA DO DATASET
@@ -153,14 +261,17 @@ def analyze_complete_dataset(dataframes):
             
         df = dataframes[sheet_name]
         
+        # Limpar dataframe antes da análise
+        df_clean = clean_dataframe(df)
+        
         # Contar projetos nesta categoria
-        analysis['categorias_projetos'][category]['total'] += len(df)
+        analysis['categorias_projetos'][category]['total'] += len(df_clean)
         
         # Identificar colunas automaticamente
-        col_info = identify_columns(df)
+        col_info = identify_columns(df_clean)
         
         # Processar cada projeto para extrair dados
-        for idx, row in df.iterrows():
+        for idx, row in df_clean.iterrows():
             try:
                 projeto_info = extract_project_info(row, col_info, category, sheet_name)
                 
@@ -189,7 +300,7 @@ def analyze_complete_dataset(dataframes):
                                 projeto_info['duracao_anos'] / 
                                 projeto_info['area_hectares'])
                         
-                        if categoria not in analysis['taxas_sequestro_reais']:
+                        if category not in analysis['taxas_sequestro_reais']:
                             analysis['taxas_sequestro_reais'][category] = []
                         analysis['taxas_sequestro_reais'][category].append(taxa)
                         
@@ -230,7 +341,10 @@ def analyze_complete_dataset(dataframes):
     return analysis
 
 def identify_columns(df):
-    """Identifica automaticamente as colunas relevantes no dataframe"""
+    """
+    Identifica automaticamente as colunas relevantes no dataframe
+    Retorna dicionário com os nomes das colunas identificadas
+    """
     columns = {
         'nome': None,
         'pais': None,
@@ -242,36 +356,46 @@ def identify_columns(df):
         'data': None
     }
     
+    if df is None or df.empty:
+        return columns
+    
+    # Converter todos os nomes de coluna para string e lowercase
+    column_map = {}
     for col in df.columns:
-        col_lower = str(col).lower()
+        col_str = str(col).strip()
+        column_map[col_str.lower()] = col
+    
+    # Procurar por padrões nos nomes das colunas
+    for pattern_dict in [
+        {'key': 'nome', 'patterns': ['project', 'projeto', 'name', 'nome', 'title', 'titulo']},
+        {'key': 'pais', 'patterns': ['country', 'pais', 'location', 'region', 'região']},
+        {'key': 'area', 'patterns': ['area', 'hectare', 'ha', 'land', 'size', 'tamanho', 'hectares']},
+        {'key': 'creditos', 'patterns': ['credit', 'credits', 'credito', 'volume', 'amount', 'total', 'co2', 'carbon']},
+        {'key': 'duracao', 'patterns': ['year', 'duration', 'period', 'lifetime', 'time', 'anos', 'duração']},
+        {'key': 'metodologia', 'patterns': ['method', 'methodology', 'metodologia', 'type', 'tipo', 'practice', 'pratica']},
+        {'key': 'preco', 'patterns': ['price', 'preco', 'value', 'valor', 'cost', 'custo']},
+        {'key': 'data', 'patterns': ['date', 'data', 'year', 'ano']}
+    ]:
+        key = pattern_dict['key']
+        patterns = pattern_dict['patterns']
         
-        # Nome do projeto
-        if any(word in col_lower for word in ['name', 'project', 'title', 'nome', 'projeto']):
-            columns['nome'] = col
-        
-        # País
-        elif any(word in col_lower for word in ['country', 'pais', 'location', 'region']):
-            columns['pais'] = col
-        
-        # Área
-        elif any(word in col_lower for word in ['area', 'hectare', 'ha', 'land', 'size', 'hectares']):
-            columns['area'] = col
-        
-        # Créditos
-        elif any(word in col_lower for word in ['credit', 'issued', 'volume', 'amount', 'total', 'credits']):
-            columns['creditos'] = col
-        
-        # Duração
-        elif any(word in col_lower for word in ['year', 'duration', 'period', 'lifetime', 'time', 'anos']):
-            columns['duracao'] = col
-        
-        # Metodologia
-        elif any(word in col_lower for word in ['methodology', 'standard', 'type', 'practice', 'metodologia']):
-            columns['metodologia'] = col
-        
-        # Preço
-        elif any(word in col_lower for word in ['price', 'value', 'cost', 'preco', 'valor']):
-            columns['preco'] = col
+        for pattern in patterns:
+            for col_lower, col_original in column_map.items():
+                if pattern in col_lower and columns[key] is None:
+                    columns[key] = col_original
+                    break
+            if columns[key] is not None:
+                break
+    
+    # Se não encontrou por nome, tentar por conteúdo das primeiras linhas
+    if columns['nome'] is None:
+        for col in df.columns:
+            col_str = str(col)
+            # Verificar se a coluna contém nomes de projetos
+            sample_vals = df[col].dropna().head(5).astype(str).tolist()
+            if any(len(v) > 10 and not v.isdigit() for v in sample_vals):
+                columns['nome'] = col
+                break
     
     return columns
 
@@ -348,7 +472,7 @@ def extract_market_prices(dataframes):
     # Tentar extrair preços reais se houver coluna de preço
     for sheet in ['1. Standards', '2. Platforms', '3. Methodologies']:
         if sheet in dataframes:
-            df = dataframes[sheet]
+            df = clean_dataframe(dataframes[sheet])
             for col in df.columns:
                 if 'price' in str(col).lower() or 'value' in str(col).lower():
                     # Tentar extrair valores numéricos
@@ -384,6 +508,9 @@ def convert_to_numeric(value):
         
         # Remover caracteres não numéricos (exceto ponto e vírgula)
         str_value = re.sub(r'[^\d.,]', '', str_value)
+        
+        if not str_value:
+            return None
         
         # Substituir vírgula por ponto se necessário
         if ',' in str_value and '.' in str_value:
@@ -784,14 +911,15 @@ def render_project_explorer(dataframes, sheet_names, analysis):
         st.markdown("### 🌍 Filtrar por País")
         
         # Extrair países disponíveis desta aba
-        df = dataframes[selected_sheet]
+        df_raw = dataframes[selected_sheet]
+        df = clean_dataframe(df_raw)
         paises_disponiveis = []
         
         for col in df.columns:
-            if any(word in str(col).lower() for word in ['country', 'pais']):
+            if any(word in str(col).lower() for word in ['country', 'pais', 'nation', 'location']):
                 paises_unicos = df[col].dropna().unique()
                 for pais in paises_unicos:
-                    if pais and str(pais).strip():
+                    if pais and str(pais).strip() and str(pais).lower() != 'nan':
                         pais_nome = get_country_name(str(pais))
                         if pais_nome not in paises_disponiveis:
                             paises_disponiveis.append(pais_nome)
@@ -807,7 +935,8 @@ def render_project_explorer(dataframes, sheet_names, analysis):
     
     # Conteúdo principal
     if selected_sheet in dataframes:
-        df = dataframes[selected_sheet]
+        df_raw = dataframes[selected_sheet]
+        df = clean_dataframe(df_raw)
         config = SHEET_CONFIG.get(selected_sheet, {})
         
         # Aplicar filtros
@@ -815,7 +944,7 @@ def render_project_explorer(dataframes, sheet_names, analysis):
         
         if selected_countries:
             for col in filtered_df.columns:
-                if any(word in str(col).lower() for word in ['country', 'pais']):
+                if any(word in str(col).lower() for word in ['country', 'pais', 'nation', 'location']):
                     filtered_df = filtered_df[
                         filtered_df[col].apply(lambda x: get_country_name(str(x)) if pd.notna(x) else "").isin(selected_countries)
                     ]
@@ -825,18 +954,43 @@ def render_project_explorer(dataframes, sheet_names, analysis):
         st.markdown(f"### {config.get('icon', '📊')} {selected_sheet}")
         st.markdown(f"**{formatar_br_inteiro(len(filtered_df))} projetos encontrados** • Dados extraídos do dataset FAO")
         
-        # Encontrar colunas mais relevantes
+        # Encontrar colunas mais relevantes (priorizar colunas com conteúdo significativo)
         relevant_cols = []
-        priority_words = ['name', 'project', 'country', 'credit', 'issued', 'area', 'hectare', 'type', 'standard']
         
-        for word in priority_words:
+        # Primeiro, identificar colunas que parecem ter conteúdo útil
+        content_rich_cols = []
+        for col in filtered_df.columns:
+            col_str = str(col)
+            # Ignorar colunas com nomes genéricos como "Coluna_X" se não tiverem conteúdo
+            if not col_str.startswith('Coluna_'):
+                non_null_count = filtered_df[col].notna().sum()
+                if non_null_count > 0:
+                    content_rich_cols.append((col, non_null_count))
+        
+        # Ordenar por quantidade de conteúdo
+        content_rich_cols.sort(key=lambda x: x[1], reverse=True)
+        
+        # Adicionar colunas prioritárias primeiro
+        priority_keywords = ['name', 'project', 'country', 'credit', 'issued', 'area', 'hectare', 'type', 'standard', 'method', 'price', 'value']
+        
+        for keyword in priority_keywords:
             for col in filtered_df.columns:
-                if word in str(col).lower() and col not in relevant_cols:
+                col_str = str(col).lower()
+                if keyword in col_str and col not in relevant_cols:
                     relevant_cols.append(col)
         
+        # Adicionar outras colunas com conteúdo
+        for col, _ in content_rich_cols:
+            if col not in relevant_cols and len(relevant_cols) < 8:  # Limitar a 8 colunas
+                relevant_cols.append(col)
+        
+        # Se não encontrou colunas relevantes, usar todas
+        if not relevant_cols:
+            relevant_cols = filtered_df.columns.tolist()[:8]  # Limitar a 8 colunas
+        
         # Mostrar dados (formatando colunas numéricas)
-        if relevant_cols:
-            display_df = filtered_df[relevant_cols].head(50).copy()
+        if relevant_cols and len(filtered_df) > 0:
+            display_df = filtered_df[relevant_cols].copy()
             
             # Identificar e formatar colunas numéricas
             for col in display_df.columns:
@@ -845,7 +999,7 @@ def render_project_explorer(dataframes, sheet_names, analysis):
                     numeric_series = pd.to_numeric(display_df[col], errors='coerce')
                     if numeric_series.notna().any():
                         # Formatar números inteiros
-                        if all(x == int(x) for x in numeric_series.dropna()):
+                        if all(x == int(x) for x in numeric_series.dropna() if pd.notna(x)):
                             display_df[col] = numeric_series.apply(lambda x: formatar_br_inteiro(x) if pd.notna(x) else x)
                         else:
                             # Formatar números decimais
@@ -853,12 +1007,34 @@ def render_project_explorer(dataframes, sheet_names, analysis):
                 except:
                     pass
             
+            # Mostrar dataframe com informações úteis
             st.dataframe(
-                display_df,
+                display_df.head(100),  # Limitar a 100 linhas para performance
                 use_container_width=True,
                 height=400,
-                hide_index=True
+                hide_index=True,
+                column_config={
+                    col: st.column_config.Column(
+                        col,
+                        help=f"Coluna de dados da aba {selected_sheet}"
+                    ) for col in display_df.columns
+                }
             )
+            
+            # Mostrar estatísticas sobre os dados
+            with st.expander("📊 Estatísticas dos dados exibidos"):
+                st.write(f"**Total de registros:** {formatar_br_inteiro(len(display_df))}")
+                st.write(f"**Colunas exibidas:** {len(display_df.columns)}")
+                
+                # Contar valores não nulos por coluna
+                non_null_counts = display_df.notna().sum()
+                st.write("**Valores não nulos por coluna:**")
+                for col in display_df.columns:
+                    count = non_null_counts[col]
+                    percentage = (count / len(display_df)) * 100
+                    st.write(f"- {col}: {formatar_br_inteiro(count)} ({formatar_br_dec(percentage, 1)}%)")
+        else:
+            st.warning(f"Nenhum dado encontrado na aba {selected_sheet} após aplicar os filtros.")
 
 def render_market_statistics(analysis):
     """Estatísticas detalhadas do mercado real"""
@@ -942,16 +1118,13 @@ def load_fao_dataset():
         
         for sheet in excel.sheet_names:
             try:
-                df = excel.parse(sheet, header=0)
+                # Carregar sem definir índice automático
+                df = excel.parse(sheet, header=0, index_col=None)
                 
-                # Limpeza básica
-                df = df.dropna(axis=1, how='all')
-                df.columns = [str(col).strip() for col in df.columns]
+                # Aplicar limpeza completa
+                df_clean = clean_dataframe(df)
                 
-                # Remover colunas completamente vazias
-                df = df.loc[:, df.notna().any()]
-                
-                data[sheet] = df
+                data[sheet] = df_clean
                 sheet_names.append(sheet)
                 
             except Exception as e:
