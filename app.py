@@ -1,4 +1,4 @@
-ajuste o seguinte script matendo todo orestante identico para os valores aprecem no padrão brasil ... onde virgula separa casas decamis e ponto milhar: import streamlit as st
+import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
