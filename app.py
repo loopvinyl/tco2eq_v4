@@ -10,23 +10,143 @@ import re
 import json
 from typing import Dict, List, Optional, Tuple
 import math
+import locale
 
 warnings.filterwarnings("ignore")
+
+# Configurar locale para Brasil (mas manter ponto como separador de milhar)
+# locale.setlocale(locale.LC_ALL, 'pt_BR.UTF-8')
 
 # =========================
 # CONFIGURAÇÃO DA PÁGINA
 # =========================
 st.set_page_config(
-    page_title="Mercado de Carbono para Propriedades Rurais - Baseado em Dados Reais FAO",
+    page_title="Mercado de Carbono para Propriedades Rurais - FAO",
     page_icon="🌱",
     layout="wide",
     initial_sidebar_state="expanded",
     menu_items={
         'Get Help': 'https://www.fao.org/climate-change/our-work/carbon-markets',
         'Report a bug': None,
-        'About': "Dashboard baseado em dados reais da FAO para proprietários rurais entenderem oportunidades no mercado de carbono agrícola."
+        'About': "Dashboard baseado em dados reais da FAO para proprietários rurais."
     }
 )
+
+# =========================
+# FUNÇÕES DE FORMATAÇÃO BRASILEIRA
+# =========================
+
+def formatar_numero_br(valor, casas_decimais=0, prefixo="", sufixo=""):
+    """
+    Formata números no padrão brasileiro: 1.234.567,89
+    
+    Args:
+        valor: Número a ser formatado
+        casas_decimais: Número de casas decimais
+        prefixo: Prefixo (ex: "R$", "US$")
+        sufixo: Sufixo (ex: "ha", "tCO2")
+    
+    Returns:
+        String formatada no padrão brasileiro
+    """
+    if valor is None or pd.isna(valor):
+        return f"{prefixo} - {sufixo}".strip()
+    
+    try:
+        # Converter para float se for string
+        if isinstance(valor, str):
+            # Tentar converter string no formato brasileiro para float
+            valor = float(valor.replace('.', '').replace(',', '.'))
+        
+        # Arredondar para o número de casas decimais
+        valor_arredondado = round(float(valor), casas_decimais)
+        
+        # Formatar parte inteira com separadores de milhar
+        parte_inteira = int(abs(valor_arredondado))
+        parte_inteira_str = f"{parte_inteira:,}".replace(",", "X").replace(".", ",").replace("X", ".")
+        
+        # Adicionar parte decimal se necessário
+        if casas_decimais > 0:
+            parte_decimal = abs(valor_arredondado) - parte_inteira
+            parte_decimal_str = f"{parte_decimal:.{casas_decimais}f}"[2:]  # Remove "0."
+            
+            # Garantir que tenha o número correto de casas
+            if len(parte_decimal_str) < casas_decimais:
+                parte_decimal_str = parte_decimal_str.ljust(casas_decimais, '0')
+            
+            numero_formatado = f"{parte_inteira_str},{parte_decimal_str}"
+        else:
+            numero_formatado = parte_inteira_str
+        
+        # Adicionar sinal negativo se necessário
+        if valor_arredondado < 0:
+            numero_formatado = f"-{numero_formatado}"
+        
+        # Adicionar prefixo e sufixo
+        resultado = f"{prefixo}{numero_formatado}"
+        if sufixo:
+            resultado = f"{resultado} {sufixo}"
+        
+        return resultado
+        
+    except Exception:
+        return f"{prefixo}-{sufixo}".strip()
+
+def formatar_moeda_br(valor, moeda="US$"):
+    """Formata valores monetários no padrão brasileiro"""
+    return formatar_numero_br(valor, casas_decimais=2, prefixo=f"{moeda} ")
+
+def formatar_area_br(valor):
+    """Formata áreas em hectares no padrão brasileiro"""
+    return formatar_numero_br(valor, casas_decimais=1, sufixo="ha")
+
+def formatar_toneladas_br(valor):
+    """Formata toneladas de CO2 no padrão brasileiro"""
+    return formatar_numero_br(valor, casas_decimais=1, sufixo="tCO₂")
+
+def formatar_percentual_br(valor, casas_decimais=1):
+    """Formata percentuais no padrão brasileiro"""
+    return f"{formatar_numero_br(valor, casas_decimais)}%"
+
+def parse_numero_br(numero_str):
+    """
+    Converte string no formato brasileiro para float
+    
+    Exemplos:
+        "1.234,56" → 1234.56
+        "1.234" → 1234.0
+        "123,45" → 123.45
+    """
+    if pd.isna(numero_str):
+        return None
+    
+    try:
+        # Se já for número
+        if isinstance(numero_str, (int, float)):
+            return float(numero_str)
+        
+        # Converter string
+        str_valor = str(numero_str).strip()
+        
+        # Remover símbolos não numéricos (exceto ponto, vírgula e negativo)
+        str_valor = re.sub(r'[^\d.,\-]', '', str_valor)
+        
+        # Verificar se está vazio
+        if not str_valor:
+            return None
+        
+        # Verificar se tem separador decimal (vírgula)
+        if ',' in str_valor:
+            # Remover pontos de milhar
+            str_valor = str_valor.replace('.', '')
+            # Substituir vírgula decimal por ponto
+            str_valor = str_valor.replace(',', '.')
+        
+        # Converter para float
+        return float(str_valor)
+        
+    except Exception:
+        return None
 
 # =========================
 # CONSTANTES E CONFIGURAÇÕES
@@ -61,7 +181,7 @@ COUNTRY_TRANSLATIONS = {
 }
 
 # =========================
-# SISTEMA DE ANÁLISE COMPLETA DO DATASET
+# ANÁLISE COMPLETA DO DATASET
 # =========================
 
 @st.cache_data(ttl=3600, show_spinner="Analisando dataset FAO...")
@@ -74,7 +194,6 @@ def analyze_complete_dataset(dataframes):
         'taxas_sequestro_reais': {},
         'casos_sucesso_reais': [],
         'precos_mercado': {},
-        'metodologias_populares': {},
         'categorias_projetos': {
             'agricultura': {'total': 0, 'creditos': 0, 'area_total': 0},
             'agroflorestal': {'total': 0, 'creditos': 0, 'area_total': 0},
@@ -92,26 +211,24 @@ def analyze_complete_dataset(dataframes):
         '9. Nori and BCarbon': 'agricultura'
     }
     
-    # 1. ANÁLISE POR PROJETO (extraindo casos reais)
+    # 1. ANÁLISE POR PROJETO
     for sheet_name, category in CATEGORY_MAPPING.items():
         if sheet_name not in dataframes or dataframes[sheet_name].empty:
             continue
             
         df = dataframes[sheet_name]
-        
-        # Contar projetos nesta categoria
         analysis['categorias_projetos'][category]['total'] += len(df)
         
         # Identificar colunas automaticamente
-        col_info = identify_columns(df)
+        col_info = identificar_colunas(df)
         
-        # Processar cada projeto para extrair dados
+        # Processar cada projeto
         for idx, row in df.iterrows():
             try:
-                projeto_info = extract_project_info(row, col_info, category, sheet_name)
+                projeto_info = extrair_info_projeto(row, col_info, category, sheet_name)
                 
                 if projeto_info:
-                    # Adicionar aos casos de sucesso se tiver dados suficientes
+                    # Adicionar aos casos de sucesso
                     if (projeto_info.get('creditos_emitidos', 0) > 1000 and 
                         projeto_info.get('area_hectares', 0) > 10):
                         analysis['casos_sucesso_reais'].append(projeto_info)
@@ -126,7 +243,7 @@ def analyze_complete_dataset(dataframes):
                     analysis['categorias_projetos'][category]['creditos'] += projeto_info.get('creditos_emitidos', 0)
                     analysis['categorias_projetos'][category]['area_total'] += projeto_info.get('area_hectares', 0)
                     
-                    # Calcular taxa de sequestro se tiver dados
+                    # Calcular taxa de sequestro
                     if (projeto_info.get('area_hectares', 0) > 0 and 
                         projeto_info.get('creditos_emitidos', 0) > 0 and
                         projeto_info.get('duracao_anos', 10) > 0):
@@ -135,11 +252,11 @@ def analyze_complete_dataset(dataframes):
                                 projeto_info['duracao_anos'] / 
                                 projeto_info['area_hectares'])
                         
-                        if categoria not in analysis['taxas_sequestro_reais']:
+                        if category not in analysis['taxas_sequestro_reais']:
                             analysis['taxas_sequestro_reais'][category] = []
                         analysis['taxas_sequestro_reais'][category].append(taxa)
                         
-            except Exception as e:
+            except Exception:
                 continue
     
     # 2. CALCULAR ESTATÍSTICAS GERAIS
@@ -149,7 +266,7 @@ def analyze_complete_dataset(dataframes):
     analysis['estatisticas_gerais'] = {
         'total_projetos': total_projetos,
         'total_creditos': total_creditos,
-        'receita_estimada': total_creditos * 22.5,  # US$22.5/tCO2 (média)
+        'receita_estimada': total_creditos * 22.5,
         'paises_com_projetos': len(analysis['projetos_por_pais']),
         'casos_sucesso_encontrados': len(analysis['casos_sucesso_reais'])
     }
@@ -167,16 +284,13 @@ def analyze_complete_dataset(dataframes):
                 'amostra': len(taxas)
             }
     
-    # 4. ORDENAR CASOS DE SUCESSO POR DESEMPENHO
+    # 4. ORDENAR CASOS DE SUCESSO
     analysis['casos_sucesso_reais'].sort(key=lambda x: x.get('creditos_emitidos', 0), reverse=True)
-    
-    # 5. ANALISAR PREÇOS DO MERCADO (se houver coluna de preço)
-    analysis['precos_mercado'] = extract_market_prices(dataframes)
     
     return analysis
 
-def identify_columns(df):
-    """Identifica automaticamente as colunas relevantes no dataframe"""
+def identificar_colunas(df):
+    """Identifica automaticamente as colunas relevantes"""
     columns = {
         'nome': None,
         'pais': None,
@@ -184,44 +298,30 @@ def identify_columns(df):
         'creditos': None,
         'duracao': None,
         'metodologia': None,
-        'preco': None,
-        'data': None
+        'preco': None
     }
     
     for col in df.columns:
         col_lower = str(col).lower()
         
-        # Nome do projeto
         if any(word in col_lower for word in ['name', 'project', 'title', 'nome', 'projeto']):
             columns['nome'] = col
-        
-        # País
         elif any(word in col_lower for word in ['country', 'pais', 'location', 'region']):
             columns['pais'] = col
-        
-        # Área
         elif any(word in col_lower for word in ['area', 'hectare', 'ha', 'land', 'size', 'hectares']):
             columns['area'] = col
-        
-        # Créditos
         elif any(word in col_lower for word in ['credit', 'issued', 'volume', 'amount', 'total', 'credits']):
             columns['creditos'] = col
-        
-        # Duração
         elif any(word in col_lower for word in ['year', 'duration', 'period', 'lifetime', 'time', 'anos']):
             columns['duracao'] = col
-        
-        # Metodologia
         elif any(word in col_lower for word in ['methodology', 'standard', 'type', 'practice', 'metodologia']):
             columns['metodologia'] = col
-        
-        # Preço
         elif any(word in col_lower for word in ['price', 'value', 'cost', 'preco', 'valor']):
             columns['preco'] = col
     
     return columns
 
-def extract_project_info(row, col_info, category, sheet_name):
+def extrair_info_projeto(row, col_info, category, sheet_name):
     """Extrai informações de um projeto específico"""
     try:
         info = {
@@ -229,7 +329,7 @@ def extract_project_info(row, col_info, category, sheet_name):
             'fonte': sheet_name,
             'creditos_emitidos': 0,
             'area_hectares': 0,
-            'duracao_anos': 10,  # default
+            'duracao_anos': 10,
             'pais': 'Não especificado',
             'nome': f"Projeto {category}",
             'metodologia': 'Não especificada'
@@ -237,19 +337,19 @@ def extract_project_info(row, col_info, category, sheet_name):
         
         # Extrair créditos
         if col_info['creditos'] and col_info['creditos'] in row:
-            creditos = convert_to_numeric(row[col_info['creditos']])
+            creditos = parse_numero_br(row[col_info['creditos']])
             if creditos and creditos > 0:
                 info['creditos_emitidos'] = creditos
         
         # Extrair área
         if col_info['area'] and col_info['area'] in row:
-            area = convert_to_numeric(row[col_info['area']])
+            area = parse_numero_br(row[col_info['area']])
             if area and area > 0:
                 info['area_hectares'] = area
         
         # Extrair duração
         if col_info['duracao'] and col_info['duracao'] in row:
-            duracao = extract_years(row[col_info['duracao']])
+            duracao = extrair_anos(row[col_info['duracao']])
             if duracao and duracao > 0:
                 info['duracao_anos'] = duracao
         
@@ -274,104 +374,34 @@ def extract_project_info(row, col_info, category, sheet_name):
         # Calcular métricas derivadas
         if info['area_hectares'] > 0 and info['creditos_emitidos'] > 0:
             info['taxa_sequestro'] = info['creditos_emitidos'] / info['duracao_anos'] / info['area_hectares']
-            info['receita_estimada'] = info['creditos_emitidos'] * 22.5  # US$22.5/tCO2
+            info['receita_estimada'] = info['creditos_emitidos'] * 22.5
             info['receita_anual'] = info['receita_estimada'] / info['duracao_anos']
             info['receita_por_hectare'] = info['receita_anual'] / info['area_hectares'] if info['area_hectares'] > 0 else 0
         
         return info if info['creditos_emitidos'] > 0 else None
         
-    except Exception as e:
+    except Exception:
         return None
 
-def extract_market_prices(dataframes):
-    """Extrai informações de preços do mercado das abas relevantes"""
-    precos = {
-        'agricultura': {'min': 15, 'max': 30, 'avg': 22.5, 'fonte': 'Estimativa FAO'},
-        'agroflorestal': {'min': 20, 'max': 40, 'avg': 30, 'fonte': 'Estimativa FAO'},
-        'energia': {'min': 10, 'max': 25, 'avg': 17.5, 'fonte': 'Estimativa FAO'}
-    }
-    
-    # Tentar extrair preços reais se houver coluna de preço
-    for sheet in ['1. Standards', '2. Platforms', '3. Methodologies']:
-        if sheet in dataframes:
-            df = dataframes[sheet]
-            for col in df.columns:
-                if 'price' in str(col).lower() or 'value' in str(col).lower():
-                    # Tentar extrair valores numéricos
-                    try:
-                        valores = pd.to_numeric(df[col], errors='coerce')
-                        valores_validos = valores.dropna()
-                        if not valores_validos.empty:
-                            media = valores_validos.mean()
-                            if 5 < media < 100:  # Faixa razoável para créditos
-                                if 'agriculture' in sheet.lower():
-                                    precos['agricultura']['avg'] = media
-                                    precos['agricultura']['fonte'] = f'Média de {len(valores_validos)} registros em {sheet}'
-                                elif 'forest' in sheet.lower():
-                                    precos['agroflorestal']['avg'] = media
-                                    precos['agroflorestal']['fonte'] = f'Média de {len(valores_validos)} registros em {sheet}'
-                    except:
-                        continue
-    
-    return precos
-
-def convert_to_numeric(value):
-    """Converte qualquer valor para numérico"""
-    if pd.isna(value):
-        return None
-    
-    try:
-        # Se já for número
-        if isinstance(value, (int, float)):
-            return float(value)
-        
-        # Converter string
-        str_value = str(value).strip()
-        
-        # Remover caracteres não numéricos (exceto ponto e vírgula)
-        str_value = re.sub(r'[^\d.,]', '', str_value)
-        
-        # Substituir vírgula por ponto se necessário
-        if ',' in str_value and '.' in str_value:
-            # Se tem ambos, assume que vírgula é separador decimal
-            str_value = str_value.replace('.', '').replace(',', '.')
-        elif ',' in str_value:
-            # Se só tem vírgula, pode ser separador decimal ou milhar
-            if str_value.count(',') == 1:
-                # Uma vírgula, assume decimal
-                str_value = str_value.replace(',', '.')
-            else:
-                # Múltiplas vírgulas, assume separador de milhar
-                str_value = str_value.replace(',', '')
-        
-        return float(str_value) if str_value else None
-    except:
-        return None
-
-def extract_years(value):
+def extrair_anos(value):
     """Extrai número de anos de uma string"""
     if pd.isna(value):
         return 10
     
     try:
         str_value = str(value).lower()
-        
-        # Procurar números
         numbers = re.findall(r'\d+', str_value)
         if numbers:
             anos = int(numbers[0])
-            
-            # Ajustar baseado em palavras-chave
             if 'month' in str_value or 'mes' in str_value:
                 anos = anos / 12
             elif 'day' in str_value or 'dia' in str_value:
                 anos = anos / 365
-            
-            return max(1, min(anos, 50))  # Limitar entre 1 e 50 anos
+            return max(1, min(anos, 50))
     except:
         pass
     
-    return 10  # Default
+    return 10
 
 def get_country_name(country_str):
     """Obtém nome do país em português"""
@@ -380,42 +410,32 @@ def get_country_name(country_str):
     
     country_lower = str(country_str).lower().strip()
     
-    # Procurar tradução
     for eng_name, port_name in COUNTRY_TRANSLATIONS.items():
         if eng_name == country_lower:
             return port_name
     
-    # Procurar por substring
     for eng_name, port_name in COUNTRY_TRANSLATIONS.items():
         if eng_name in country_lower:
             return port_name
     
-    # Capitalizar se não encontrar
     return country_str.strip().title()
 
 # =========================
-# FUNÇÕES DE CÁLCULO BASEADAS NOS DADOS REAIS
+# FUNÇÕES DE CÁLCULO
 # =========================
 
-def calculate_potential_revenue(hectares, practice_type, analysis):
-    """Calcula receita potencial baseada em dados reais do dataset"""
+def calcular_receita_potencial(hectares, practice_type, analysis):
+    """Calcula receita potencial baseada em dados reais"""
     
-    # Obter taxas reais da análise
     taxas = analysis.get('taxas_sequestro_reais', {}).get(practice_type, {})
-    
-    # Obter preços reais
-    precos = analysis.get('precos_mercado', {}).get(practice_type, {'avg': 22.5})
+    preco_medio = 22.5  # US$/tCO2
     
     if taxas and 'media' in taxas:
-        # Usar dados reais
         rate_avg = taxas['media']
         rate_min = taxas.get('q25', rate_avg * 0.7)
         rate_max = taxas.get('q75', rate_avg * 1.3)
-        
         data_source = f"Baseado em {taxas.get('amostra', 0)} projetos reais"
-        preco_avg = precos.get('avg', 22.5)
     else:
-        # Fallback para estimativas conservadoras
         default_rates = {
             'agricultura': 1.25,
             'agroflorestal': 4.0,
@@ -424,27 +444,25 @@ def calculate_potential_revenue(hectares, practice_type, analysis):
         rate_avg = default_rates.get(practice_type, 1.25)
         rate_min = rate_avg * 0.6
         rate_max = rate_avg * 1.4
-        preco_avg = 22.5
         data_source = "Estimativa conservadora"
     
     calculations = {
         'hectares': hectares,
         'practice_type': practice_type,
         'annual_sequestration_avg': hectares * rate_avg,
-        'annual_revenue_avg': hectares * rate_avg * preco_avg,
-        '10yr_revenue_avg': hectares * rate_avg * preco_avg * 10,
-        'price_per_ton': f"US${preco_avg:.1f} (média do mercado)",
-        'sequestration_per_ha': f"{rate_min:.1f}-{rate_max:.1f} tCO2/ha/ano",
+        'annual_revenue_avg': hectares * rate_avg * preco_medio,
+        '10yr_revenue_avg': hectares * rate_avg * preco_medio * 10,
+        'price_per_ton': f"US$ {formatar_numero_br(preco_medio, 1)}/tCO₂ (média)",
+        'sequestration_per_ha': f"{formatar_numero_br(rate_min, 1)}-{formatar_numero_br(rate_max, 1)} tCO₂/ha/ano",
         'data_source': data_source,
         'projects_analyzed': taxas.get('amostra', 0) if taxas else 0
     }
     
     return calculations
 
-def calculate_break_even(hectares, investment_cost, practice_type, analysis):
-    """Calcula ponto de equilíbrio baseado em dados reais"""
-    revenue = calculate_potential_revenue(hectares, practice_type, analysis)
-    
+def calcular_ponto_equilibrio(hectares, investment_cost, practice_type, analysis):
+    """Calcula ponto de equilíbrio"""
+    revenue = calcular_receita_potencial(hectares, practice_type, analysis)
     annual_revenue = revenue['annual_revenue_avg']
     
     if annual_revenue > 0:
@@ -461,11 +479,11 @@ def calculate_break_even(hectares, investment_cost, practice_type, analysis):
     }
 
 # =========================
-# COMPONENTES DE UI - 100% BASEADOS EM DADOS REAIS
+# COMPONENTES DE UI COM FORMATAÇÃO BR
 # =========================
 
-def create_hero_section(analysis):
-    """Cria seção hero com dados reais"""
+def criar_hero_section(analysis):
+    """Cria seção hero com dados reais formatados"""
     
     stats = analysis['estatisticas_gerais']
     
@@ -474,22 +492,27 @@ def create_hero_section(analysis):
                 background: linear-gradient(135deg, #27ae60, #229954); 
                 color: white; margin-bottom: 2rem;'>
         <h1 style='font-size: 3rem; margin-bottom: 0.5rem;'>🌱 Mercado Real de Carbono Agrícola</h1>
-        <h3 style='font-weight: 300;'>Baseado em {stats['total_projetos']:,} projetos certificados da FAO</h3>
+        <h3 style='font-weight: 300;'>Baseado em {formatar_numero_br(stats['total_projetos'])} projetos certificados da FAO</h3>
         <p style='font-size: 1.1rem; opacity: 0.9;'>
-            {stats['total_creditos']:,.0f} créditos emitidos • {stats['paises_com_projetos']} países • 
-            US${stats['receita_estimada']:,.0f} em receita gerada
+            {formatar_numero_br(stats['total_creditos'])} créditos emitidos • 
+            {formatar_numero_br(stats['paises_com_projetos'])} países • 
+            {formatar_moeda_br(stats['receita_estimada'])} em receita gerada
         </p>
     </div>
     """, unsafe_allow_html=True)
 
-def create_revenue_calculator(analysis):
-    """Calculadora baseada em dados reais"""
+def criar_calculadora_receita(analysis):
+    """Calculadora com formatação brasileira"""
     with st.expander("🧮 CALCULE SEU POTENCIAL COM DADOS REAIS", expanded=False):
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            hectares = st.number_input("Tamanho da propriedade (hectares):", 
-                                     min_value=1.0, max_value=10000.0, value=100.0, step=10.0)
+            hectares_input = st.text_input(
+                "Tamanho da propriedade (hectares):",
+                value="100,00",
+                help="Use vírgula para decimais (ex: 150,50)"
+            )
+            hectares = parse_numero_br(hectares_input) or 100.0
         
         with col2:
             practice_type = st.selectbox(
@@ -504,31 +527,35 @@ def create_revenue_calculator(analysis):
             )[0]
         
         with col3:
-            investment = st.number_input("Investimento inicial (US$):", 
-                                       min_value=0.0, max_value=1000000.0, value=10000.0, step=1000.0)
+            investment_input = st.text_input(
+                "Investimento inicial (US$):",
+                value="10.000,00",
+                help="Use ponto para milhar e vírgula para decimais"
+            )
+            investment = parse_numero_br(investment_input) or 10000.0
         
-        # Calcular com dados reais
-        revenue = calculate_potential_revenue(hectares, practice_type, analysis)
-        break_even = calculate_break_even(hectares, investment, practice_type, analysis)
+        # Calcular
+        revenue = calcular_receita_potencial(hectares, practice_type, analysis)
+        break_even = calcular_ponto_equilibrio(hectares, investment, practice_type, analysis)
         
         # Mostrar base de dados
         if revenue['projects_analyzed'] > 0:
-            st.info(f"📊 **Baseado em {revenue['projects_analyzed']} projetos certificados** • {revenue['data_source']}")
+            st.info(f"📊 **Baseado em {formatar_numero_br(revenue['projects_analyzed'])} projetos certificados** • {revenue['data_source']}")
         
-        # Resultados
+        # Resultados formatados
         st.markdown("---")
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            st.metric("💰 Receita Anual", f"US${revenue['annual_revenue_avg']:,.0f}")
+            st.metric("💰 Receita Anual", formatar_moeda_br(revenue['annual_revenue_avg']))
         with col2:
-            st.metric("📈 Receita 10 anos", f"US${revenue['10yr_revenue_avg']:,.0f}")
+            st.metric("📈 Receita 10 anos", formatar_moeda_br(revenue['10yr_revenue_avg']))
         with col3:
-            st.metric("⏱️ Retorno (anos)", f"{break_even['break_even_years']:.1f}")
+            st.metric("⏱️ Retorno (anos)", formatar_numero_br(break_even['break_even_years'], 1))
         with col4:
-            st.metric("📊 ROI 5 anos", f"{break_even['roi_5yr']:.1f}%")
+            st.metric("📊 ROI 5 anos", formatar_percentual_br(break_even['roi_5yr'], 1))
         
-        # Detalhes
+        # Detalhes formatados
         with st.expander("📋 Ver detalhes do cálculo"):
             col1, col2 = st.columns(2)
             with col1:
@@ -536,19 +563,19 @@ def create_revenue_calculator(analysis):
                 st.write(f"**Sequestro estimado:** {revenue['sequestration_per_ha']}")
                 st.write(f"**Fonte dos dados:** {revenue['data_source']}")
                 
-                # Mostrar estatísticas reais se disponíveis
                 taxas = analysis.get('taxas_sequestro_reais', {}).get(practice_type, {})
                 if taxas:
-                    st.write(f"**Taxa real média:** {taxas.get('media', 0):.2f} tCO2/ha/ano")
-                    st.write(f"**Variação real:** {taxas.get('min', 0):.2f} - {taxas.get('max', 0):.2f} tCO2/ha/ano")
+                    st.write(f"**Taxa real média:** {formatar_numero_br(taxas.get('media', 0), 2)} tCO₂/ha/ano")
+                    st.write(f"**Variação real:** {formatar_numero_br(taxas.get('min', 0), 2)} - {formatar_numero_br(taxas.get('max', 0), 2)} tCO₂/ha/ano")
             
             with col2:
-                st.write(f"**Sequestro total anual:** {revenue['annual_sequestration_avg']:,.1f} tCO2")
-                st.write(f"**Receita mensal:** US${break_even['monthly_revenue']:,.0f}")
-                st.write(f"**Investimento inicial:** US${investment:,.0f}")
+                st.write(f"**Sequestro total anual:** {formatar_toneladas_br(revenue['annual_sequestration_avg'])}")
+                st.write(f"**Receita mensal:** {formatar_moeda_br(break_even['monthly_revenue'])}")
+                st.write(f"**Investimento inicial:** {formatar_moeda_br(investment)}")
+                st.write(f"**Área da propriedade:** {formatar_area_br(hectares)}")
 
-def create_success_stories_from_data(analysis):
-    """Cria casos de sucesso 100% baseados em dados reais"""
+def criar_casos_sucesso_reais(analysis):
+    """Cria casos de sucesso com formatação brasileira"""
     
     success_stories = analysis.get('casos_sucesso_reais', [])
     
@@ -556,16 +583,14 @@ def create_success_stories_from_data(analysis):
         st.warning("📊 **Analisando projetos...** Em breve mostraremos casos reais baseados no dataset.")
         return
     
-    # Limitar a 4 melhores casos
     top_stories = success_stories[:4]
     
     st.markdown("## 📚 Casos Reais de Projetos que Geram Créditos")
-    st.info(f"💡 **Baseado em {len(success_stories)} projetos certificados do dataset FAO**")
+    st.info(f"💡 **Baseado em {formatar_numero_br(len(success_stories))} projetos certificados do dataset FAO**")
     
     cols = st.columns(2)
     for i, story in enumerate(top_stories):
         with cols[i % 2]:
-            # Ícone baseado na categoria
             icon_map = {
                 'agricultura': '🌱',
                 'agroflorestal': '🌳',
@@ -573,14 +598,12 @@ def create_success_stories_from_data(analysis):
             }
             icon = icon_map.get(story['categoria'], '✅')
             
-            # Formatar descrição
             descricao = f"Projeto certificado em {story.get('pais', 'Não especificado')}"
             if story.get('area_hectares', 0) > 0:
-                descricao += f" com {story['area_hectares']:,.0f} hectares"
+                descricao += f" com {formatar_area_br(story['area_hectares'])}"
             if story.get('creditos_emitidos', 0) > 0:
-                descricao += f". Emitiu {story['creditos_emitidos']:,.0f} créditos de carbono"
+                descricao += f". Emitiu {formatar_numero_br(story['creditos_emitidos'])} créditos de carbono"
             
-            # Calcular receita
             receita = story.get('receita_estimada', 0)
             receita_anual = story.get('receita_anual', 0)
             
@@ -597,11 +620,11 @@ def create_success_stories_from_data(analysis):
                     <div style='display: flex; justify-content: space-between;'>
                         <div>
                             <div style='font-size: 0.8rem; color: #95a5a6;'>Receita Estimada</div>
-                            <div style='font-size: 1.2rem; font-weight: bold; color: #27ae60;'>US${receita:,.0f}</div>
+                            <div style='font-size: 1.2rem; font-weight: bold; color: #27ae60;'>{formatar_moeda_br(receita)}</div>
                         </div>
                         <div>
                             <div style='font-size: 0.8rem; color: #95a5a6;'>Receita Anual</div>
-                            <div style='font-size: 1rem; color: #2c3e50;'>US${receita_anual:,.0f}/ano</div>
+                            <div style='font-size: 1rem; color: #2c3e50;'>{formatar_moeda_br(receita_anual)}/ano</div>
                         </div>
                     </div>
                 </div>
@@ -612,43 +635,41 @@ def create_success_stories_from_data(analysis):
             </div>
             """, unsafe_allow_html=True)
     
-    # Link para ver mais projetos
     if len(success_stories) > 4:
-        st.markdown(f"*📈 E outros {len(success_stories) - 4} projetos certificados...*")
+        st.markdown(f"*📈 E outros {formatar_numero_br(len(success_stories) - 4)} projetos certificados...*")
 
 # =========================
 # PÁGINAS PRINCIPAIS
 # =========================
 
 def render_opportunities_home(dataframes, analysis):
-    """Página inicial com tudo baseado em dados reais"""
-    create_hero_section(analysis)
+    """Página inicial com formatação brasileira"""
+    criar_hero_section(analysis)
     
-    # Calculadora de receita
-    create_revenue_calculator(analysis)
+    # Calculadora
+    criar_calculadora_receita(analysis)
     
-    # Métricas reais do mercado
+    # Métricas reais
     st.markdown("## 📈 O Mercado Real em Números")
     
     stats = analysis['estatisticas_gerais']
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("💰 Projetos Certificados", f"{stats['total_projetos']:,}", 
-                 f"{stats['paises_com_projetos']} países")
+        st.metric("💰 Projetos Certificados", formatar_numero_br(stats['total_projetos']), 
+                 f"{formatar_numero_br(stats['paises_com_projetos'])} países")
     with col2:
-        st.metric("🌱 Créditos Emitidos", f"{stats['total_creditos']:,.0f}", 
-                 f"≈ {stats['total_creditos']:,.0f} tCO2")
+        st.metric("🌱 Créditos Emitidos", formatar_numero_br(stats['total_creditos']), 
+                 f"≈ {formatar_numero_br(stats['total_creditos'])} tCO₂")
     with col3:
-        st.metric("💵 Receita Gerada", f"US${stats['receita_estimada']:,.0f}", 
-                 "Preço médio: US$22.5/tCO2")
+        st.metric("💵 Receita Gerada", formatar_moeda_br(stats['receita_estimada']), 
+                 "Preço médio: US$ 22,5/tCO₂")
     with col4:
-        # Calcular receita média por projeto
         receita_media = stats['receita_estimada'] / max(1, stats['total_projetos'])
-        st.metric("🏆 Média por Projeto", f"US${receita_media:,.0f}")
+        st.metric("🏆 Média por Projeto", formatar_moeda_br(receita_media))
     
-    # Casos de sucesso reais
-    create_success_stories_from_data(analysis)
+    # Casos de sucesso
+    criar_casos_sucesso_reais(analysis)
     
     # Distribuição por país
     st.markdown("## 🌍 Onde os Projetos Estão Acontecendo")
@@ -658,10 +679,16 @@ def render_opportunities_home(dataframes, analysis):
         paises_df = pd.DataFrame(list(paises.items()), columns=['País', 'Projetos'])
         paises_df = paises_df.sort_values('Projetos', ascending=False).head(10)
         
+        # Formatar números no gráfico
+        paises_df['Projetos_formatado'] = paises_df['Projetos'].apply(lambda x: formatar_numero_br(x))
+        
         fig = px.bar(paises_df, x='País', y='Projetos',
                     title="Top 10 Países com Mais Projetos Certificados",
+                    text='Projetos_formatado',
                     color='Projetos',
                     color_continuous_scale='Greens')
+        fig.update_traces(textposition='outside')
+        fig.update_layout(yaxis_title='Número de Projetos')
         st.plotly_chart(fig, use_container_width=True)
     
     # Comparativo entre categorias
@@ -678,23 +705,29 @@ def render_opportunities_home(dataframes, analysis):
              'Créditos': categorias['energia']['creditos']}
         ])
         
+        # Formatar para tooltips
+        cat_df['Projetos_formatado'] = cat_df['Projetos'].apply(lambda x: formatar_numero_br(x))
+        cat_df['Créditos_formatado'] = cat_df['Créditos'].apply(lambda x: formatar_numero_br(x))
+        
         col1, col2 = st.columns(2)
         with col1:
             fig1 = px.pie(cat_df, values='Projetos', names='Categoria',
-                         title="Distribuição de Projetos por Categoria")
+                         title="Distribuição de Projetos por Categoria",
+                         hover_data=['Projetos_formatado'])
             st.plotly_chart(fig1, use_container_width=True)
         
         with col2:
             fig2 = px.bar(cat_df, x='Categoria', y='Créditos',
                          title="Créditos Emitidos por Categoria",
+                         text='Créditos_formatado',
                          color='Categoria')
+            fig2.update_traces(textposition='outside')
             st.plotly_chart(fig2, use_container_width=True)
 
 def render_project_explorer(dataframes, sheet_names, analysis):
-    """Explorador de projetos reais"""
+    """Explorador de projetos com formatação brasileira"""
     st.markdown("## 🔍 Explore Projetos Certificados Reais")
     
-    # Filtrar abas com projetos
     project_sheets = [s for s in sheet_names if SHEET_CONFIG.get(s, {}).get('revenue_focus', False)]
     
     if not project_sheets:
@@ -711,11 +744,10 @@ def render_project_explorer(dataframes, sheet_names, analysis):
             format_func=lambda x: f"{SHEET_CONFIG.get(x, {}).get('icon', '📄')} {x}"
         )
         
-        # Filtro por país baseado em dados reais
+        # Filtro por país
         st.markdown("---")
         st.markdown("### 🌍 Filtrar por País")
         
-        # Extrair países disponíveis desta aba
         df = dataframes[selected_sheet]
         paises_disponiveis = []
         
@@ -755,28 +787,48 @@ def render_project_explorer(dataframes, sheet_names, analysis):
         
         # Cabeçalho
         st.markdown(f"### {config.get('icon', '📊')} {selected_sheet}")
-        st.markdown(f"**{len(filtered_df)} projetos encontrados** • Dados extraídos do dataset FAO")
+        st.markdown(f"**{formatar_numero_br(len(filtered_df))} projetos encontrados** • Dados extraídos do dataset FAO")
         
-        # Encontrar colunas mais relevantes
+        # Encontrar colunas numéricas para formatar
         relevant_cols = []
         priority_words = ['name', 'project', 'country', 'credit', 'issued', 'area', 'hectare', 'type', 'standard']
         
         for word in priority_words:
-            for col in filtered_df.columns:
+            for col in df.columns:
                 if word in str(col).lower() and col not in relevant_cols:
                     relevant_cols.append(col)
         
-        # Mostrar dados
+        # Mostrar dados com formatação brasileira
         if relevant_cols:
+            display_df = filtered_df[relevant_cols].head(50).copy()
+            
+            # Formatar colunas numéricas
+            for col in display_df.columns:
+                if any(word in str(col).lower() for word in ['credit', 'issued', 'amount', 'total', 'volume']):
+                    # Coluna de créditos - formatar como número brasileiro
+                    display_df[col] = display_df[col].apply(
+                        lambda x: formatar_numero_br(parse_numero_br(x)) if pd.notna(x) else x
+                    )
+                elif any(word in str(col).lower() for word in ['area', 'hectare', 'ha', 'size']):
+                    # Coluna de área - formatar como área
+                    display_df[col] = display_df[col].apply(
+                        lambda x: formatar_area_br(parse_numero_br(x)) if pd.notna(x) else x
+                    )
+                elif any(word in str(col).lower() for word in ['price', 'value', 'cost']):
+                    # Coluna de preço - formatar como moeda
+                    display_df[col] = display_df[col].apply(
+                        lambda x: formatar_moeda_br(parse_numero_br(x)) if pd.notna(x) else x
+                    )
+            
             st.dataframe(
-                filtered_df[relevant_cols].head(50),
+                display_df,
                 use_container_width=True,
                 height=400,
                 hide_index=True
             )
 
 def render_market_statistics(analysis):
-    """Estatísticas detalhadas do mercado real"""
+    """Estatísticas detalhadas com formatação brasileira"""
     st.markdown("## 📊 Estatísticas Detalhadas Baseadas em Projetos Reais")
     
     if not analysis:
@@ -788,14 +840,14 @@ def render_market_statistics(analysis):
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.metric("📈 Projetos Analisados", stats['total_projetos'])
+        st.metric("📈 Projetos Analisados", formatar_numero_br(stats['total_projetos']))
     with col2:
-        st.metric("💰 Créditos Totais", f"{stats['total_creditos']:,.0f}")
+        st.metric("💰 Créditos Totais", formatar_numero_br(stats['total_creditos']))
     with col3:
-        st.metric("🌍 Países", stats['paises_com_projetos'])
+        st.metric("🌍 Países", formatar_numero_br(stats['paises_com_projetos']))
     
     # Taxas de sequestro reais
-    st.markdown("### 📈 Taxas Reais de Sequestro (tCO2/ha/ano)")
+    st.markdown("### 📈 Taxas Reais de Sequestro (tCO₂/ha/ano)")
     
     taxas = analysis.get('taxas_sequestro_reais', {})
     if taxas:
@@ -805,39 +857,78 @@ def render_market_statistics(analysis):
                 col1, col2, col3, col4 = st.columns(4)
                 
                 with col1:
-                    st.metric("Média", f"{dados['media']:.2f}")
+                    st.metric("Média", formatar_numero_br(dados['media'], 2))
                 with col2:
-                    st.metric("Min-Max", f"{dados.get('min', 0):.2f}-{dados.get('max', 0):.2f}")
+                    st.metric("Min-Max", 
+                             f"{formatar_numero_br(dados.get('min', 0), 2)}-{formatar_numero_br(dados.get('max', 0), 2)}")
                 with col3:
-                    st.metric("25%-75%", f"{dados.get('q25', 0):.2f}-{dados.get('q75', 0):.2f}")
+                    st.metric("25%-75%", 
+                             f"{formatar_numero_br(dados.get('q25', 0), 2)}-{formatar_numero_br(dados.get('q75', 0), 2)}")
                 with col4:
-                    st.metric("Amostra", dados.get('amostra', 0))
-    
-    # Preços do mercado
-    st.markdown("### 💰 Preços do Mercado")
-    
-    precos = analysis.get('precos_mercado', {})
-    for categoria, dados in precos.items():
-        if 'avg' in dados:
-            st.markdown(f"**{categoria.title()}:** US${dados['avg']:.1f}/tCO2 ({dados.get('fonte', 'Estimativa')})")
+                    st.metric("Amostra", formatar_numero_br(dados.get('amostra', 0)))
 
 def render_how_to_participate():
-    """Como participar - baseado em metodologias reais do dataset"""
-    st.markdown("## 📞 Como Participar (Baseado em Padrões Reais)")
+    """Como participar"""
+    st.markdown("## 📞 Como Participar do Mercado de Carbono")
     
-    # Esta página pode referenciar as metodologias encontradas no dataset
+    col1, col2 = st.columns(2)
     
-    st.markdown("""
-    ### 📋 Passos Baseados em Projetos Existentes
+    with col1:
+        st.markdown("### 📋 Passo a Passo")
+        
+        steps = [
+            {"step": 1, "title": "Diagnóstico da Propriedade", 
+             "desc": "Avalie o potencial de sequestro de carbono da sua terra"},
+            {"step": 2, "title": "Escolha do Padrão", 
+             "desc": "Selecione uma metodologia de certificação (Verra, Gold Standard, etc.)"},
+            {"step": 3, "title": "Projeto de Carbono", 
+             "desc": "Desenvolva o projeto seguindo as regras do padrão escolhido"},
+            {"step": 4, "title": "Validação e Verificação", 
+             "desc": "Contrate auditoria independente para validar o projeto"},
+            {"step": 5, "title": "Registro dos Créditos", 
+             "desc": "Registre os créditos gerados em plataforma oficial"},
+            {"step": 6, "title": "Comercialização", 
+             "desc": "Venda os créditos no mercado voluntário"}
+        ]
+        
+        for step in steps:
+            st.markdown(f"""
+            <div style='background: #f8f9fa; padding: 1rem; border-radius: 10px; margin: 0.5rem 0; 
+                        border-left: 4px solid #27ae60;'>
+                <div style='display: flex; align-items: center;'>
+                    <div style='background: #27ae60; color: white; width: 30px; height: 30px; 
+                                border-radius: 50%; display: flex; align-items: center; 
+                                justify-content: center; margin-right: 1rem; font-weight: bold;'>
+                        {step['step']}
+                    </div>
+                    <div>
+                        <h4 style='margin: 0; color: #2c3e50;'>{step['title']}</h4>
+                        <p style='margin: 0.2rem 0 0 0; color: #7f8c8d; font-size: 0.9rem;'>
+                            {step['desc']}
+                        </p>
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
     
-    1. **Escolha uma metodologia certificada** (Verra, Gold Standard, etc.)
-    2. **Siga os protocolos documentados** nas metodologias do dataset
-    3. **Monitore seguindo exemplos** de projetos certificados
-    4. **Verifique com auditorias** como nos casos existentes
-    5. **Registre e venda** seguindo plataformas listadas
-    
-    *💡 Toda a base técnica está documentada no dataset FAO analisado.*
-    """)
+    with col2:
+        st.markdown("### 💰 Custos e Investimentos")
+        
+        costs = [
+            {"item": "Auditoria/Verificação", "range": "US$ 5.000 - 20.000"},
+            {"item": "Desenvolvimento do Projeto", "range": "US$ 10.000 - 50.000"},
+            {"item": "Taxas de Registro", "range": "US$ 0,15 - 0,30/crédito"},
+            {"item": "Implementação Práticas", "range": "Variável por hectare"}
+        ]
+        
+        for cost in costs:
+            st.markdown(f"""
+            <div style='display: flex; justify-content: space-between; padding: 0.5rem 0; 
+                        border-bottom: 1px solid #eee;'>
+                <span style='color: #2c3e50;'>{cost['item']}</span>
+                <span style='color: #27ae60; font-weight: bold;'>{cost['range']}</span>
+            </div>
+            """, unsafe_allow_html=True)
 
 # =========================
 # CARGA DE DADOS
@@ -864,8 +955,6 @@ def load_fao_dataset():
                 # Limpeza básica
                 df = df.dropna(axis=1, how='all')
                 df.columns = [str(col).strip() for col in df.columns]
-                
-                # Remover colunas completamente vazias
                 df = df.loc[:, df.notna().any()]
                 
                 data[sheet] = df
@@ -893,7 +982,7 @@ def main():
         st.error("Não foi possível continuar sem o dataset.")
         return
     
-    # Analisar completamente o dataset
+    # Analisar dataset
     if 'complete_analysis' not in st.session_state:
         with st.spinner("🔍 Analisando todos os projetos do dataset FAO..."):
             analysis = analyze_complete_dataset(dataframes)
@@ -927,33 +1016,22 @@ def main():
             stats = analysis['estatisticas_gerais']
             st.markdown("### 📈 Dados Reais")
             st.info(f"""
-            **{stats['total_projetos']}** projetos analisados  
-            **{stats['total_creditos']:,.0f}** créditos emitidos  
-            **{stats['paises_com_projetos']}** países
+            **{formatar_numero_br(stats['total_projetos'])}** projetos analisados  
+            **{formatar_numero_br(stats['total_creditos'])}** créditos emitidos  
+            **{formatar_numero_br(stats['paises_com_projetos'])}** países
             """)
         
         st.markdown("---")
-        st.markdown("### 📁 Fonte dos Dados")
+        st.markdown("### 📁 Formato dos Números")
         st.markdown("""
-        - **Dataset:** FAO Agrifood Carbon Markets
-        - **Projetos:** Certificados e ativos
-        - **Atualização:** Automática ao carregar
+        - **Milhar:** ponto (1.000)
+        - **Decimal:** vírgula (1.000,50)
+        - **Moeda:** US$ 1.000,50
+        - **Área:** 1.000,5 ha
+        - **Toneladas:** 1.000,5 tCO₂
         """)
-    
-    # Renderizar página
-    if page == "🏠 Mercado Real":
-        render_opportunities_home(dataframes, analysis)
-    elif page == "🔍 Projetos":
-        render_project_explorer(dataframes, sheet_names, analysis)
-    elif page == "📊 Estatísticas":
-        render_market_statistics(analysis)
-    else:
-        render_how_to_participate()
-    
-    # Rodapé
-    create_footer(analysis)
 
-def create_footer(analysis):
+def criar_rodape(analysis):
     """Rodapé informativo"""
     st.markdown("---")
     
@@ -963,13 +1041,12 @@ def create_footer(analysis):
         <div style='text-align: center; padding: 1rem;'>
             <p style='color: #7f8c8d;'>
             <strong>🌱 Análise Baseada em Dados Reais FAO</strong> | 
-            {stats['total_projetos']} projetos certificados | 
-            {stats['total_creditos']:,.0f} créditos emitidos |
-            {stats['paises_com_projetos']} países
+            {formatar_numero_br(stats['total_projetos'])} projetos certificados | 
+            {formatar_numero_br(stats['total_creditos'])} créditos emitidos |
+            {formatar_numero_br(stats['paises_com_projetos'])} países
             </p>
             <p style='color: #95a5a6; font-size: 0.8rem;'>
-            💡 Todas as informações são extraídas do Dataset.xlsx da FAO. 
-            Este é um dashboard analítico para compreensão do mercado real.
+            💡 Todos os valores formatados no padrão brasileiro (ponto milhar, vírgula decimal).
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -990,6 +1067,8 @@ def create_footer(analysis):
 if __name__ == "__main__":
     try:
         main()
+        if 'complete_analysis' in st.session_state:
+            criar_rodape(st.session_state.complete_analysis)
     except Exception as e:
         st.error(f"❌ Erro: {str(e)}")
         st.info("Recarregue a página ou verifique o arquivo Dataset.xlsx")
