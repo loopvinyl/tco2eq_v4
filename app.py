@@ -75,9 +75,9 @@ def load_agriculture_data():
         response = requests.get(url)
         response.raise_for_status()
         
-        # Ler a aba 4.Agriculture
+        # Ler a aba 4. Agriculture
         excel_file = BytesIO(response.content)
-        df = pd.read_excel(excel_file, sheet_name='4.Agriculture')
+        df = pd.read_excel(excel_file, sheet_name='4. Agriculture')
         
         # Identificar colunas de créditos (ano a ano)
         credit_cols = {}
@@ -463,7 +463,7 @@ def create_status_chart(analysis):
 
 def main():
     st.title("📊 Análise Detalhada de Créditos de Carbono")
-    st.markdown("**Foco:** Projetos Agrícolas | **Fonte:** Dataset FAO | **Aba:** 4.Agriculture")
+    st.markdown("**Foco:** Projetos Agrícolas | **Fonte:** Dataset FAO | **Aba:** 4. Agriculture")
     
     # Carregar dados
     with st.spinner("Carregando dados do dataset FAO..."):
@@ -540,7 +540,7 @@ def main():
     <div style='text-align: center; color: #7f8c8d; padding: 1rem;'>
         <p>📊 <strong>Análise baseada no dataset FAO de Mercados de Carbono Agrícola</strong></p>
         <p>🌱 Foco exclusivo em projetos agrícolas com créditos emitidos</p>
-        <p>📈 Dados extraídos da aba "4.Agriculture" do Dataset.xlsx</p>
+        <p>📈 Dados extraídos da aba "4. Agriculture" do Dataset.xlsx</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -563,7 +563,7 @@ def main():
         
         **Fonte dos dados:**  
         Dataset FAO Agrifood Carbon Markets  
-        Aba: 4.Agriculture
+        Aba: 4. Agriculture
         
         **Total de projetos analisados:**  
         {}
