@@ -88,8 +88,25 @@ def load_agriculture_data() -> Tuple[pd.DataFrame, Dict, Dict, Dict]:
         # Ler o arquivo Excel
         excel_file = BytesIO(response.content)
         
+        # Listar todas as sheets disponíveis
+        xls = pd.ExcelFile(excel_file)
+        st.sidebar.write(f"📊 Sheets disponíveis: {xls.sheet_names}")
+        
+        # Usar o nome exato da sheet com espaço
+        sheet_name = '4. Agriculture'
+        
+        if sheet_name not in xls.sheet_names:
+            st.error(f"Sheet '{sheet_name}' não encontrada!")
+            st.error(f"Tentando encontrar alternativa...")
+            # Tentar encontrar sheet similar
+            for sheet in xls.sheet_names:
+                if 'agriculture' in sheet.lower() or '4' in sheet:
+                    sheet_name = sheet
+                    st.info(f"Usando sheet alternativa: {sheet_name}")
+                    break
+        
         # Ler as primeiras linhas para identificar a estrutura
-        df_preview = pd.read_excel(excel_file, sheet_name='4. Agriculture', nrows=5)
+        df_preview = pd.read_excel(excel_file, sheet_name=sheet_name, nrows=5)
         
         # Voltar ao início do arquivo
         excel_file.seek(0)
@@ -99,7 +116,12 @@ def load_agriculture_data() -> Tuple[pd.DataFrame, Dict, Dict, Dict]:
         # A linha 2: anos para cada tipo
         
         # Ler com header=[0, 1] para capturar ambas as linhas
-        df = pd.read_excel(excel_file, sheet_name='4. Agriculture', header=[0, 1])
+        df = pd.read_excel(excel_file, sheet_name=sheet_name, header=[0, 1])
+        
+        # Mostrar estrutura encontrada para debugging
+        st.sidebar.write("📐 Estrutura encontrada:")
+        st.sidebar.write(f"Colunas: {len(df.columns)}")
+        st.sidebar.write(f"Primeiras colunas: {df.columns[:5]}")
         
         # Renomear colunas para facilitar o processamento
         new_columns = []
@@ -115,28 +137,34 @@ def load_agriculture_data() -> Tuple[pd.DataFrame, Dict, Dict, Dict]:
         
         df.columns = new_columns
         
+        # Mostrar colunas renomeadas
+        st.sidebar.write("🔤 Colunas renomeadas (amostra):", df.columns[:10].tolist())
+        
         # Identificar colunas de créditos emitidos por ano
         issued_cols = {}
         retired_cols = {}
         
         for col in df.columns:
-            col_str = str(col)
+            col_str = str(col).lower()
             
             # Procurar por colunas de créditos emitidos
-            if 'Credits issued' in col_str or 'issued' in col_str.lower():
+            if 'issued' in col_str and not 'total' in col_str:
                 # Extrair ano
-                year_match = re.search(r'(19[9][6-9]|20[0-2][0-9]|202[0-3])', col_str)
+                year_match = re.search(r'(19[9][6-9]|20[0-2][0-9]|202[0-3])', col)
                 if year_match:
                     year = int(year_match.group(0))
                     issued_cols[year] = col
             
             # Procurar por colunas de créditos aposentados
-            elif 'Credits retired' in col_str or 'retired' in col_str.lower():
+            elif 'retired' in col_str and not 'total' in col_str:
                 # Extrair ano
-                year_match = re.search(r'(19[9][6-9]|20[0-2][0-9]|202[0-3])', col_str)
+                year_match = re.search(r'(19[9][6-9]|20[0-2][0-9]|202[0-3])', col)
                 if year_match:
                     year = int(year_match.group(0))
                     retired_cols[year] = col
+        
+        st.sidebar.write(f"📅 Anos de créditos emitidos: {sorted(issued_cols.keys())}")
+        st.sidebar.write(f"📅 Anos de créditos aposentados: {sorted(retired_cols.keys())}")
         
         # Identificar colunas principais
         main_cols = {}
@@ -160,17 +188,20 @@ def load_agriculture_data() -> Tuple[pd.DataFrame, Dict, Dict, Dict]:
                         main_cols[key] = col
                         break
         
+        st.sidebar.write("🔍 Colunas principais identificadas:", main_cols)
+        
         # Garantir que temos as colunas essenciais
         essential_cols = ['project_name', 'total_issued', 'total_retired']
         missing = [col for col in essential_cols if col not in main_cols]
         if missing:
-            st.warning(f"Colunas essenciais não encontradas: {missing}")
+            st.warning(f"⚠️ Colunas essenciais não encontradas: {missing}")
             
         return df, issued_cols, retired_cols, main_cols
         
     except Exception as e:
-        st.error(f"Erro ao carregar dados: {str(e)}")
-        st.error("Verifique a estrutura do arquivo Excel. O script espera cabeçalhos nas linhas 1 e 2.")
+        st.error(f"❌ Erro ao carregar dados: {str(e)}")
+        import traceback
+        st.error(traceback.format_exc())
         return None, {}, {}, {}
 
 @st.cache_data
@@ -811,33 +842,36 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     
-    # Carregar dados
-    with st.spinner("🔍 Carregando dados do dataset FAO..."):
+    # Mostrar status de carregamento
+    with st.status("🔍 Carregando dados do dataset FAO...", expanded=True) as status:
+        st.write("Conectando ao GitHub...")
         df, issued_cols, retired_cols, main_cols = load_agriculture_data()
+        
+        if df is not None:
+            st.write(f"✅ Dados carregados! {len(df)} linhas encontradas")
+            st.write(f"📊 Anos de créditos emitidos: {len(issued_cols)} anos")
+            st.write(f"📊 Anos de créditos aposentados: {len(retired_cols)} anos")
+            st.write(f"🔍 Colunas principais: {list(main_cols.keys())}")
+        else:
+            st.write("❌ Falha ao carregar dados")
+        status.update(label="Análise concluída!", state="complete")
     
     if df is None:
         st.error("🚨 Não foi possível carregar os dados. Verifique:")
         st.error("1. A conexão com a internet")
         st.error("2. O formato do arquivo Excel")
         st.error("3. Se a aba '4. Agriculture' existe")
-        return
-    
-    # Informações sobre a estrutura encontrada
-    with st.expander("ℹ️ Informações sobre a Estrutura de Dados", expanded=False):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Colunas de Créditos Emitidos", len(issued_cols))
-        with col2:
-            st.metric("Colunas de Créditos Negociados", len(retired_cols))
-        with col3:
-            st.metric("Total de Projetos", len(df))
         
-        if issued_cols:
-            st.write(f"**Anos de créditos emitidos:** {sorted(issued_cols.keys())}")
-        if retired_cols:
-            st.write(f"**Anos de créditos negociados:** {sorted(retired_cols.keys())}")
-        if main_cols:
-            st.write(f"**Colunas principais identificadas:** {list(main_cols.keys())}")
+        # Tentar mostrar as sheets disponíveis
+        try:
+            url = "https://github.com/loopvinyl/tco2eq_v4/raw/main/Dataset.xlsx"
+            response = requests.get(url)
+            excel_file = BytesIO(response.content)
+            xls = pd.ExcelFile(excel_file)
+            st.write(f"📋 Sheets disponíveis no arquivo: {xls.sheet_names}")
+        except:
+            st.write("Não foi possível listar as sheets disponíveis")
+        return
     
     # Analisar dados
     with st.spinner("📊 Analisando créditos de carbono..."):
@@ -952,17 +986,17 @@ def main():
         st.markdown("## 📋 Informações do Dataset")
         
         st.metric("Total de Projetos", 
-                 formatar_br_inteiro(analysis['total_projects']))
+                 formatar_br_inteiro(analysis.get('total_projects', 0)))
         
         st.metric("Projetos com Créditos", 
-                 formatar_br_inteiro(analysis['projects_with_credits']))
+                 formatar_br_inteiro(analysis.get('projects_with_credits', 0)))
         
         st.metric("Taxa de Negociação", 
-                 f"{analysis['retirement_rate']:.2f}%")
+                 f"{analysis.get('retirement_rate', 0):.2f}%")
         
         # Análise de eficiência
-        if analysis['projects_with_credits'] > 0:
-            avg_credits_per_project = analysis['total_credits_issued'] / analysis['projects_with_credits']
+        if analysis.get('projects_with_credits', 0) > 0:
+            avg_credits_per_project = analysis.get('total_credits_issued', 0) / analysis.get('projects_with_credits', 1)
             st.metric("Média por Projeto", 
                      formatar_milhoes(avg_credits_per_project))
         
@@ -975,9 +1009,9 @@ def main():
         preco_max = 25  # US$ por tCO₂eq
         
         # Calcular valores
-        valor_min = analysis['total_credits_retired'] * preco_min
-        valor_med = analysis['total_credits_retired'] * preco_med
-        valor_max = analysis['total_credits_retired'] * preco_max
+        valor_min = analysis.get('total_credits_retired', 0) * preco_min
+        valor_med = analysis.get('total_credits_retired', 0) * preco_med
+        valor_max = analysis.get('total_credits_retired', 0) * preco_max
         
         st.markdown(f"**Valor de mercado estimado:**")
         st.markdown(f"• Mínimo (US${preco_min}/tCO₂eq): {formatar_moeda_curta(valor_min)}")
