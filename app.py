@@ -3,15 +3,11 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
 import warnings
-import os
 import re
-import json
-from typing import Dict, List, Optional, Tuple
-import math
 import requests
 from io import BytesIO
+import base64
 
 warnings.filterwarnings("ignore")
 
@@ -19,25 +15,18 @@ warnings.filterwarnings("ignore")
 # CONFIGURAÇÃO DA PÁGINA
 # =========================
 st.set_page_config(
-    page_title="Mercado de Carbono Agrícola - Baseado em Dados Reais de Projetos",
+    page_title="Mercado de Carbono Agrícola - Análise de Projetos",
     page_icon="🌱",
     layout="wide",
-    initial_sidebar_state="expanded",
-    menu_items={
-        'Get Help': 'https://www.fao.org/climate-change/our-work/carbon-markets',
-        'Report a bug': None,
-        'About': "Dashboard baseado em dados reais de projetos agrícolas de carbono para proprietários rurais entenderem oportunidades no mercado."
-    }
+    initial_sidebar_state="expanded"
 )
 
 # =========================
-# FUNÇÕES DE FORMATAÇÃO BRASILEIRA - ATUALIZADAS
+# FUNÇÕES DE FORMATAÇÃO
 # =========================
 
 def formatar_milhoes(numero):
-    """
-    Formata números grandes como milhões: 367,2 milhões
-    """
+    """Formata números grandes como milhões: 367,2 milhões"""
     if pd.isna(numero):
         return "N/A"
     
@@ -54,399 +43,246 @@ def formatar_milhoes(numero):
         return formatar_br_inteiro(numero)
 
 def formatar_br(numero):
-    """
-    Formata números no padrão brasileiro: 1.234,56
-    """
+    """Formata números no padrão brasileiro: 1.234,56"""
     if pd.isna(numero):
         return "N/A"
     
-    # Arredonda para 2 casas decimais
     numero = round(numero, 2)
-    
-    # Formata como string e substitui o ponto pela vírgula
     return f"{numero:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 def formatar_br_dec(numero, decimais=2):
-    """
-    Formata números no padrão brasileiro com número específico de casas decimais
-    """
+    """Formata números no padrão brasileiro com número específico de casas decimais"""
     if pd.isna(numero):
         return "N/A"
     
-    # Arredonda para o número de casas decimais especificado
     numero = round(numero, decimais)
-    
-    # Formata como string e substitui o ponto pela vírgula
     return f"{numero:,.{decimais}f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 def formatar_br_inteiro(numero):
-    """
-    Formata números inteiros no padrão brasileiro: 1.234
-    """
+    """Formata números inteiros no padrão brasileiro: 1.234"""
     if pd.isna(numero):
         return "N/A"
     
-    # Arredonda para inteiro
     numero = int(round(numero, 0))
-    
-    # Formata como string
     return f"{numero:,}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-def formatar_moeda_curta(numero):
-    """
-    Formata valores monetários de forma curta e inteligente:
-    - > 1.000.000: X,X milhões
-    - > 1.000: X,X mil
-    - < 1.000: valor normal
-    """
-    if pd.isna(numero):
-        return "N/A"
-    
-    numero = float(numero)
-    
-    if numero >= 1000000000:  # Bilhões
-        valor = numero / 1000000000
-        return f"{formatar_br_dec(valor, 1)} bilhões"
-    elif numero >= 1000000:  # Milhões
-        valor = numero / 1000000
-        return f"{formatar_br_dec(valor, 1)} milhões"
-    elif numero >= 1000:  # Mil
-        valor = numero / 1000
-        return f"{formatar_br_dec(valor, 1)} mil"
-    else:
-        return formatar_br(numero)
-
 # =========================
-# CARGA DE DADOS DO GITHUB
+# CARGA DE DADOS - MÚLTIPLAS OPÇÕES
 # =========================
 
-@st.cache_data(ttl=3600, show_spinner="Carregando dataset do GitHub...")
-def load_dataset_from_github():
+@st.cache_data(show_spinner=False)
+def load_dataset_from_github(github_url):
     """Carrega o dataset datasetAgriculture.xlsx do GitHub"""
-    
-    # URL do arquivo no GitHub (raw)
-    github_url = "https://raw.githubusercontent.com/seu_usuario/seu_repositorio/main/datasetAgriculture.xlsx"
-    
     try:
-        # Baixar o arquivo do GitHub
         response = requests.get(github_url)
-        response.raise_for_status()  # Verifica se houve erro na requisição
+        response.raise_for_status()
         
-        # Ler o Excel do conteúdo baixado
         excel_data = BytesIO(response.content)
-        excel_file = pd.ExcelFile(excel_data, engine='openpyxl')
+        df = pd.read_excel(excel_data, engine='openpyxl')
         
-        # Carregar a planilha principal
-        sheet_name = 'Planilha1'  # Nome da planilha no arquivo
-        
-        if sheet_name not in excel_file.sheet_names:
-            # Tentar o primeiro sheet se Planilha1 não existir
-            sheet_name = excel_file.sheet_names[0]
-        
-        df = pd.read_excel(excel_data, sheet_name=sheet_name, header=0)
-        
-        st.success(f"✅ Dataset carregado com sucesso! {len(df)} registros encontrados.")
-        
-        # Mostrar informações básicas
-        st.info(f"""
-        **Informações do Dataset:**
-        - Total de projetos: {len(df)}
-        - Colunas disponíveis: {len(df.columns)}
-        - Colunas principais: {', '.join(df.columns[:10].tolist())}...
-        """)
-        
-        return df
+        return df, f"✅ Dataset carregado do GitHub ({len(df)} registros)"
         
     except requests.exceptions.RequestException as e:
-        st.error(f"❌ Erro ao baixar o arquivo do GitHub: {e}")
-        return None
+        return None, f"❌ Erro ao baixar do GitHub: {e}"
     except Exception as e:
-        st.error(f"❌ Erro ao processar o dataset: {e}")
-        return None
+        return None, f"❌ Erro ao processar o dataset: {e}"
 
-# =========================
-# ANÁLISE DE PROJETOS VÁLIDOS
-# =========================
-
-@st.cache_data(ttl=3600, show_spinner="Analisando projetos válidos...")
-def analyze_valid_projects(df):
-    """
-    Analisa projetos válidos que emitiram créditos de carbono
+def identify_columns(df):
+    """Identifica automaticamente as colunas importantes no dataset"""
+    col_map = {}
+    colunas = [str(col).strip() for col in df.columns]
     
-    Critérios:
-    1. Projeto deve ter "Total Credits Issued" > 0
-    2. Projeto deve ter status válido (Completed, Registered, etc.)
-    """
+    # Padrões de busca para cada tipo de coluna
+    padroes = {
+        'creditos_emitidos': ['total credits issued', 'credits issued', 'total issued'],
+        'creditos_aposentados': ['total credits retired', 'credits retired', 'total retired'],
+        'creditos_restantes': ['total credits remaining', 'credits remaining', 'remaining'],
+        'status': ['voluntary status', 'status', 'project status'],
+        'nome': ['project name', 'name', 'project', 'nome do projeto'],
+        'pais': ['country', 'country name', 'pais', 'location'],
+        'tipo': ['type', 'project type', 'tipo', 'category'],
+        'registro': ['voluntary registry', 'registry', 'registro'],
+        'id': ['project id', 'id', 'project code']
+    }
+    
+    # Procurar por cada padrão
+    for chave, padroes_list in padroes.items():
+        for padrao in padroes_list:
+            for col in colunas:
+                if padrao.lower() in col.lower():
+                    # Encontre o nome original da coluna
+                    col_original = df.columns[[str(c).strip().lower() for c in df.columns].index(col.lower())]
+                    col_map[chave] = col_original
+                    break
+            if chave in col_map:
+                break
+    
+    return col_map
+
+@st.cache_data(show_spinner=False)
+def analyze_valid_projects(df):
+    """Analisa projetos válidos que emitiram créditos de carbono"""
     
     analysis = {
         'estatisticas_gerais': {},
         'projetos_por_pais': {},
         'projetos_por_tipo': {},
         'projetos_por_registro': {},
+        'projetos_por_status': {},
         'projetos_validos': [],
         'timeline_emissao': {},
         'timeline_aposentadoria': {},
-        'comparativo_emitidos_vs_aposentados': {
+        'comparativo': {
             'total_emitido': 0,
             'total_aposentado': 0,
             'taxa_aposentadoria': 0,
             'creditos_disponiveis': 0
         },
-        'projetos_detalhados': []
+        'projetos_detalhados': [],
+        'colunas_identificadas': {}
     }
     
     if df is None or df.empty:
         return analysis
     
-    # Identificar colunas importantes
-    colunas = df.columns.tolist()
+    # Identificar colunas
+    col_map = identify_columns(df)
+    analysis['colunas_identificadas'] = col_map
     
-    # Procurar colunas por padrões (case insensitive)
-    col_map = {}
-    
-    for col in colunas:
-        col_lower = str(col).lower()
-        
-        # Mapear colunas importantes
-        if 'total credits issued' in col_lower:
-            col_map['creditos_emitidos'] = col
-        elif 'total credits retired' in col_lower:
-            col_map['creditos_aposentados'] = col
-        elif 'total credits remaining' in col_lower:
-            col_map['creditos_restantes'] = col
-        elif 'voluntary status' in col_lower:
-            col_map['status'] = col
-        elif 'project name' in col_lower:
-            col_map['nome'] = col
-        elif 'country' in col_lower:
-            col_map['pais'] = col
-        elif 'type' in col_lower:
-            col_map['tipo'] = col
-        elif 'voluntary registry' in col_lower:
-            col_map['registro'] = col
-        elif 'project id' in col_lower:
-            col_map['id'] = col
-    
-    st.write("**Colunas identificadas:**", col_map)
-    
-    # Verificar se temos as colunas mínimas necessárias
+    # Verificar se temos a coluna essencial de créditos emitidos
     if 'creditos_emitidos' not in col_map:
-        st.warning("⚠️ Coluna 'Total Credits Issued' não encontrada. Tentando identificar automaticamente...")
-        # Tentar encontrar coluna com 'issued' ou 'credit' no nome
-        for col in colunas:
-            col_lower = str(col).lower()
-            if 'issued' in col_lower or 'credit' in col_lower and 'retired' not in col_lower:
-                col_map['creditos_emitidos'] = col
-                break
-    
-    if 'creditos_emitidos' not in col_map:
-        st.error("❌ Não foi possível identificar a coluna de créditos emitidos.")
-        return analysis
-    
-    # Filtrar projetos válidos
-    df_valid = df.copy()
-    
-    # Converter coluna de créditos emitidos para numérico
-    try:
-        df_valid[col_map['creditos_emitidos']] = pd.to_numeric(
-            df_valid[col_map['creditos_emitidos']], errors='coerce'
-        )
-    except:
-        st.error("❌ Erro ao converter créditos emitidos para numérico.")
         return analysis
     
     # Filtrar projetos com créditos emitidos > 0
-    df_valid = df_valid[df_valid[col_map['creditos_emitidos']] > 0]
+    col_creditos = col_map['creditos_emitidos']
+    
+    # Converter para numérico
+    df[col_creditos] = pd.to_numeric(df[col_creditos], errors='coerce')
+    df_valid = df[df[col_creditos] > 0].copy()
     
     if df_valid.empty:
-        st.warning("⚠️ Nenhum projeto com créditos emitidos encontrado.")
         return analysis
     
-    # Identificar status válidos
-    status_validos = ['Completed', 'Registered', 'Gold Standard Certified Project', 
-                     'Gold Standard Certified Design', 'Under validation', 'Registered']
-    
-    if 'status' in col_map:
-        # Normalizar status
-        df_valid['status_normalizado'] = df_valid[col_map['status']].astype(str).str.strip()
-        df_valid = df_valid[df_valid['status_normalizado'].isin(status_validos)]
-    
-    st.success(f"✅ Encontrados {len(df_valid)} projetos válidos que emitiram créditos.")
-    
     # Coletar estatísticas básicas
-    total_emitido = df_valid[col_map['creditos_emitidos']].sum()
+    total_emitido = df_valid[col_creditos].sum()
     
+    # Créditos aposentados
+    total_aposentado = 0
     if 'creditos_aposentados' in col_map:
-        df_valid[col_map['creditos_aposentados']] = pd.to_numeric(
-            df_valid[col_map['creditos_aposentados']], errors='coerce'
-        )
-        total_aposentado = df_valid[col_map['creditos_aposentados']].sum()
-        taxa_aposentadoria = (total_aposentado / total_emitido * 100) if total_emitido > 0 else 0
-        creditos_disponiveis = total_emitido - total_aposentado
-    else:
-        total_aposentado = 0
-        taxa_aposentadoria = 0
-        creditos_disponiveis = total_emitido
+        col_aposentados = col_map['creditos_aposentados']
+        df_valid[col_aposentados] = pd.to_numeric(df_valid[col_aposentados], errors='coerce')
+        total_aposentado = df_valid[col_aposentados].sum()
     
-    # Projetos por país
+    # Créditos restantes
+    total_restantes = 0
+    if 'creditos_restantes' in col_map:
+        col_restantes = col_map['creditos_restantes']
+        df_valid[col_restantes] = pd.to_numeric(df_valid[col_restantes], errors='coerce')
+        total_restantes = df_valid[col_restantes].sum()
+    else:
+        total_restantes = total_emitido - total_aposentado
+    
+    # Taxa de aposentadoria
+    taxa_aposentadoria = (total_aposentado / total_emitido * 100) if total_emitido > 0 else 0
+    
+    # Coletar dados por categoria
     if 'pais' in col_map:
-        paises = df_valid[col_map['pais']].value_counts()
-        for pais, count in paises.items():
+        for pais, count in df_valid[col_map['pais']].value_counts().items():
             if pd.notna(pais):
                 analysis['projetos_por_pais'][str(pais)] = int(count)
     
-    # Projetos por tipo
     if 'tipo' in col_map:
-        tipos = df_valid[col_map['tipo']].value_counts()
-        for tipo, count in tipos.items():
+        for tipo, count in df_valid[col_map['tipo']].value_counts().items():
             if pd.notna(tipo):
                 analysis['projetos_por_tipo'][str(tipo)] = int(count)
     
-    # Projetos por registro
     if 'registro' in col_map:
-        registros = df_valid[col_map['registro']].value_counts()
-        for registro, count in registros.items():
+        for registro, count in df_valid[col_map['registro']].value_counts().items():
             if pd.notna(registro):
                 analysis['projetos_por_registro'][str(registro)] = int(count)
     
-    # Coletar projetos detalhados
-    for idx, row in df_valid.iterrows():
-        projeto = {
-            'id': row[col_map['id']] if 'id' in col_map else f"Projeto_{idx}",
-            'nome': row[col_map['nome']] if 'nome' in col_map else f"Projeto {idx}",
-            'creditos_emitidos': float(row[col_map['creditos_emitidos']]),
-            'creditos_aposentados': float(row[col_map['creditos_aposentados']]) if 'creditos_aposentados' in col_map else 0,
-            'pais': str(row[col_map['pais']]) if 'pais' in col_map else 'Não especificado',
-            'tipo': str(row[col_map['tipo']]) if 'tipo' in col_map else 'Não especificado',
-            'registro': str(row[col_map['registro']]) if 'registro' in col_map else 'Não especificado',
-            'status': str(row[col_map['status']]) if 'status' in col_map else 'Não especificado'
-        }
+    if 'status' in col_map:
+        for status, count in df_valid[col_map['status']].value_counts().items():
+            if pd.notna(status):
+                analysis['projetos_por_status'][str(status)] = int(count)
+    
+    # Projetos detalhados
+    for idx, row in df_valid.head(1000).iterrows():  # Limitar a 1000 para performance
+        projeto = {}
+        
+        for chave, coluna in col_map.items():
+            if coluna in row:
+                valor = row[coluna]
+                if pd.isna(valor):
+                    projeto[chave] = None
+                else:
+                    projeto[chave] = valor
         
         # Calcular taxa de aposentadoria do projeto
-        if projeto['creditos_emitidos'] > 0:
-            projeto['taxa_aposentadoria'] = (projeto['creditos_aposentados'] / projeto['creditos_emitidos']) * 100
-        else:
-            projeto['taxa_aposentadoria'] = 0
+        if (projeto.get('creditos_emitidos') and 
+            projeto.get('creditos_aposentados') and 
+            projeto['creditos_emitidos'] > 0):
+            projeto['taxa_aposentadoria_projeto'] = (
+                projeto['creditos_aposentados'] / projeto['creditos_emitidos'] * 100
+            )
         
         analysis['projetos_detalhados'].append(projeto)
     
-    # Analisar colunas anuais
-    year_columns = []
+    # Analisar colunas anuais (1996-2023)
+    anos_emissao = {}
+    anos_aposentadoria = {}
     
-    # Identificar colunas que são anos (1996, 1997, etc.)
-    for col in colunas:
-        try:
-            # Tentar converter para número
-            if isinstance(col, (int, float)):
-                year = int(col)
-                if 1990 <= year <= 2030:  # Faixa razoável de anos
-                    year_columns.append(col)
-            elif str(col).isdigit():
-                year = int(str(col))
-                if 1990 <= year <= 2030:
-                    year_columns.append(col)
-        except:
-            continue
-    
-    # Separar colunas de emissão vs aposentadoria
-    # Vamos assumir que as primeiras colunas de anos são emissões e as últimas são aposentadorias
-    # Isso é uma simplificação - no dataset real precisamos analisar melhor
-    half = len(year_columns) // 2
-    emission_years = year_columns[:half]
-    retirement_years = year_columns[half:] if len(year_columns) > half else []
-    
-    # Coletar dados da timeline
-    for year in emission_years:
-        if year in df_valid.columns:
+    for col in df_valid.columns:
+        col_str = str(col).strip()
+        
+        # Procurar colunas de ano
+        if col_str.isdigit() and 1996 <= int(col_str) <= 2023:
             try:
-                year_data = pd.to_numeric(df_valid[year], errors='coerce')
-                total_year = year_data.sum()
-                if pd.notna(total_year) and total_year > 0:
-                    analysis['timeline_emissao'][int(year)] = float(total_year)
+                # Converter para numérico
+                dados_ano = pd.to_numeric(df_valid[col], errors='coerce')
+                total_ano = dados_ano.sum()
+                
+                if pd.notna(total_ano) and total_ano > 0:
+                    # Tentar identificar se é emissão ou aposentadoria baseado na posição
+                    # (Simplificação - na prática precisa verificar o contexto)
+                    if len(anos_emissao) < 14:  # Primeiros anos são emissão
+                        anos_emissao[int(col_str)] = float(total_ano)
+                    else:
+                        anos_aposentadoria[int(col_str)] = float(total_ano)
             except:
                 pass
     
-    for year in retirement_years:
-        if year in df_valid.columns:
-            try:
-                year_data = pd.to_numeric(df_valid[year], errors='coerce')
-                total_year = year_data.sum()
-                if pd.notna(total_year) and total_year > 0:
-                    analysis['timeline_aposentadoria'][int(year)] = float(total_year)
-            except:
-                pass
+    analysis['timeline_emissao'] = dict(sorted(anos_emissao.items()))
+    analysis['timeline_aposentadoria'] = dict(sorted(anos_aposentadoria.items()))
     
     # Estatísticas gerais
     analysis['estatisticas_gerais'] = {
         'total_projetos_validos': len(df_valid),
         'total_creditos_emitidos': total_emitido,
         'total_creditos_aposentados': total_aposentado,
+        'total_creditos_restantes': total_restantes,
         'taxa_aposentadoria_geral': taxa_aposentadoria,
-        'creditos_disponiveis': creditos_disponiveis,
         'media_creditos_por_projeto': total_emitido / len(df_valid) if len(df_valid) > 0 else 0,
         'paises_com_projetos': len(analysis['projetos_por_pais']),
         'tipos_de_projeto': len(analysis['projetos_por_tipo']),
         'registros_utilizados': len(analysis['projetos_por_registro'])
     }
     
-    # Comparativo
-    analysis['comparativo_emitidos_vs_aposentados'] = {
+    analysis['comparativo'] = {
         'total_emitido': total_emitido,
         'total_aposentado': total_aposentado,
         'taxa_aposentadoria': taxa_aposentadoria,
-        'creditos_disponiveis': creditos_disponiveis
+        'creditos_disponiveis': total_restantes
     }
     
     return analysis
 
 # =========================
-# COMPONENTES DE UI
+# COMPONENTES DE VISUALIZAÇÃO
 # =========================
-
-def create_hero_section(analysis):
-    """Cria seção hero com dados reais"""
-    
-    if not analysis or 'estatisticas_gerais' not in analysis:
-        st.markdown(f"""
-        <div style='text-align: center; padding: 2rem; border-radius: 15px; 
-                    background: linear-gradient(135deg, #27ae60, #229954); 
-                    color: white; margin-bottom: 2rem;'>
-            <h1 style='font-size: 3rem; margin-bottom: 0.5rem;'>🌱 Mercado de Carbono Agrícola</h1>
-            <h3 style='font-weight: 300;'>Baseado em dados reais de projetos certificados</h3>
-            <p style='font-size: 1.1rem; opacity: 0.9;'>
-                Carregando análise...
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
-        return
-    
-    stats = analysis['estatisticas_gerais']
-    
-    # Formatar valores para exibição
-    total_projetos = stats.get('total_projetos_validos', 0)
-    total_emitido = stats.get('total_creditos_emitidos', 0)
-    total_aposentado = stats.get('total_creditos_aposentados', 0)
-    taxa_aposentadoria = stats.get('taxa_aposentadoria_geral', 0)
-    
-    total_emitido_fmt = formatar_milhoes(total_emitido)
-    total_aposentado_fmt = formatar_milhoes(total_aposentado)
-    
-    st.markdown(f"""
-    <div style='text-align: center; padding: 2rem; border-radius: 15px; 
-                background: linear-gradient(135deg, #27ae60, #229954); 
-                color: white; margin-bottom: 2rem;'>
-        <h1 style='font-size: 3rem; margin-bottom: 0.5rem;'>🌱 Mercado de Carbono Agrícola</h1>
-        <h3 style='font-weight: 300;'>Baseado em {formatar_br_inteiro(total_projetos)} projetos que emitiram créditos de carbono</h3>
-        <p style='font-size: 1.1rem; opacity: 0.9;'>
-            {total_emitido_fmt} créditos emitidos • {total_aposentado_fmt} créditos aposentados • 
-            {formatar_br_dec(taxa_aposentadoria, 2)}% taxa de aposentadoria
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
 
 def create_summary_cards(analysis):
     """Cria cartões com resumo das estatísticas"""
-    
     if not analysis or 'estatisticas_gerais' not in analysis:
         return
     
@@ -464,142 +300,101 @@ def create_summary_cards(analysis):
     with col2:
         st.metric(
             "🌱 Créditos Emitidos",
-            formatar_milhoes(stats.get('total_creditos_emitidos', 0)),
-            "tCO₂eq"
+            formatar_milhoes(stats.get('total_creditos_emitidos', 0))
         )
     
     with col3:
         st.metric(
             "💰 Créditos Aposentados",
             formatar_milhoes(stats.get('total_creditos_aposentados', 0)),
-            f"{formatar_br_dec(stats.get('taxa_aposentadoria_geral', 0), 2)}%"
+            f"{formatar_br_dec(stats.get('taxa_aposentadoria_geral', 0), 1)}%"
         )
     
     with col4:
         st.metric(
             "💎 Créditos Disponíveis",
-            formatar_milhoes(stats.get('creditos_disponiveis', 0)),
-            "Para venda"
+            formatar_milhoes(stats.get('total_creditos_restantes', 0))
         )
 
-def create_emission_vs_retirement_chart(analysis):
+def create_comparison_chart(analysis):
     """Cria gráfico comparando créditos emitidos vs aposentados"""
-    
-    comparativo = analysis.get('comparativo_emitidos_vs_aposentados', {})
+    comparativo = analysis.get('comparativo', {})
     
     if not comparativo or comparativo.get('total_emitido', 0) == 0:
         return
     
-    # Preparar dados para o gráfico
     dados = pd.DataFrame({
-        'Tipo': ['Emitidos', 'Aposentados', 'Disponíveis'],
-        'Créditos (tCO₂eq)': [
+        'Categoria': ['Emitidos', 'Aposentados', 'Disponíveis'],
+        'Valor (tCO₂eq)': [
             comparativo.get('total_emitido', 0),
             comparativo.get('total_aposentado', 0),
             comparativo.get('creditos_disponiveis', 0)
         ]
     })
     
-    # Formatar valores para exibição
-    dados['Formatado'] = dados['Créditos (tCO₂eq)'].apply(formatar_milhoes)
-    
-    # Criar gráfico de barras
     fig = px.bar(
         dados,
-        x='Tipo',
-        y='Créditos (tCO₂eq)',
-        color='Tipo',
+        x='Categoria',
+        y='Valor (tCO₂eq)',
+        color='Categoria',
         color_discrete_map={
             'Emitidos': '#2ecc71',
             'Aposentados': '#3498db',
             'Disponíveis': '#f39c12'
         },
-        text='Formatado',
-        title='Comparação de Créditos Emitidos vs Aposentados'
+        title='Comparação de Créditos'
     )
     
-    fig.update_traces(textposition='outside')
-    fig.update_layout(
-        yaxis_title='Créditos (tCO₂eq)',
-        showlegend=False
-    )
-    
+    fig.update_layout(showlegend=False)
     st.plotly_chart(fig, use_container_width=True)
 
-def create_projects_by_country_chart(analysis):
+def create_country_chart(analysis):
     """Cria gráfico de projetos por país"""
-    
     paises = analysis.get('projetos_por_pais', {})
     
     if not paises:
         return
     
-    # Converter para DataFrame
     df_paises = pd.DataFrame(
         list(paises.items()),
-        columns=['País', 'Projetos']
-    ).sort_values('Projetos', ascending=False).head(15)
+        columns=['País', 'Número de Projetos']
+    ).sort_values('Número de Projetos', ascending=False).head(10)
     
-    # Gráfico de barras
     fig = px.bar(
         df_paises,
         x='País',
-        y='Projetos',
-        color='Projetos',
-        color_continuous_scale='Greens',
-        title='Top 15 Países com Mais Projetos'
+        y='Número de Projetos',
+        title='Top 10 Países com Mais Projetos',
+        color='Número de Projetos',
+        color_continuous_scale='Viridis'
     )
     
     st.plotly_chart(fig, use_container_width=True)
 
-def create_projects_by_type_chart(analysis):
-    """Cria gráfico de projetos por tipo"""
+def create_timeline_chart(analysis):
+    """Cria gráfico de timeline"""
+    emissao = analysis.get('timeline_emissao', {})
+    aposentadoria = analysis.get('timeline_aposentadoria', {})
     
-    tipos = analysis.get('projetos_por_tipo', {})
-    
-    if not tipos:
-        return
-    
-    # Converter para DataFrame
-    df_tipos = pd.DataFrame(
-        list(tipos.items()),
-        columns=['Tipo', 'Projetos']
-    ).sort_values('Projetos', ascending=False)
-    
-    # Gráfico de pizza
-    fig = px.pie(
-        df_tipos,
-        values='Projetos',
-        names='Tipo',
-        title='Distribuição de Projetos por Tipo',
-        hole=0.3
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
-
-def create_timeline_charts(analysis):
-    """Cria gráficos de timeline de emissões e aposentadorias"""
-    
-    timeline_emissao = analysis.get('timeline_emissao', {})
-    timeline_aposentadoria = analysis.get('timeline_aposentadoria', {})
-    
-    if not timeline_emissao and not timeline_aposentadoria:
+    if not emissao and not aposentadoria:
         return
     
     # Preparar dados
-    years = sorted(set(list(timeline_emissao.keys()) + list(timeline_aposentadoria.keys())))
-    
     dados = []
-    for year in years:
+    anos = sorted(set(list(emissao.keys()) + list(aposentadoria.keys())))
+    
+    for ano in anos:
         dados.append({
-            'Ano': year,
-            'Emissões': timeline_emissao.get(year, 0),
-            'Aposentadorias': timeline_aposentadoria.get(year, 0)
+            'Ano': ano,
+            'Emissões': emissao.get(ano, 0),
+            'Aposentadorias': aposentadoria.get(ano, 0)
         })
     
     df_timeline = pd.DataFrame(dados)
     
-    # Gráfico de linha
+    if df_timeline.empty:
+        return
+    
     fig = go.Figure()
     
     fig.add_trace(go.Scatter(
@@ -607,8 +402,7 @@ def create_timeline_charts(analysis):
         y=df_timeline['Emissões'],
         mode='lines+markers',
         name='Créditos Emitidos',
-        line=dict(color='#2ecc71', width=3),
-        marker=dict(size=8)
+        line=dict(color='#2ecc71', width=3)
     ))
     
     fig.add_trace(go.Scatter(
@@ -616,12 +410,11 @@ def create_timeline_charts(analysis):
         y=df_timeline['Aposentadorias'],
         mode='lines+markers',
         name='Créditos Aposentados',
-        line=dict(color='#3498db', width=3),
-        marker=dict(size=8)
+        line=dict(color='#3498db', width=3)
     ))
     
     fig.update_layout(
-        title='Timeline de Créditos Emitidos vs Aposentados',
+        title='Timeline de Créditos',
         xaxis_title='Ano',
         yaxis_title='Créditos (tCO₂eq)',
         hovermode='x unified'
@@ -631,103 +424,179 @@ def create_timeline_charts(analysis):
 
 def create_projects_table(analysis):
     """Cria tabela de projetos detalhados"""
-    
     projetos = analysis.get('projetos_detalhados', [])
     
     if not projetos:
         return
     
-    st.markdown("### 📋 Detalhes dos Projetos")
+    st.markdown("### 📋 Detalhes dos Projetos (Primeiros 50)")
     
     # Converter para DataFrame
     df_projetos = pd.DataFrame(projetos)
     
-    # Selecionar colunas para exibição
-    display_cols = ['id', 'nome', 'pais', 'tipo', 'registro', 'creditos_emitidos', 
-                   'creditos_aposentados', 'taxa_aposentadoria']
+    # Selecionar colunas relevantes
+    colunas_interesse = ['id', 'nome', 'pais', 'tipo', 'registro', 'status', 
+                        'creditos_emitidos', 'creditos_aposentados']
     
-    # Filtrar colunas disponíveis
-    available_cols = [col for col in display_cols if col in df_projetos.columns]
+    colunas_disponiveis = [col for col in colunas_interesse if col in df_projetos.columns]
     
-    if not available_cols:
+    if not colunas_disponiveis:
         return
     
-    df_display = df_projetos[available_cols].copy()
+    df_display = df_projetos[colunas_disponiveis].head(50).copy()
     
-    # Formatar colunas numéricas
-    if 'creditos_emitidos' in df_display.columns:
-        df_display['creditos_emitidos'] = df_display['creditos_emitidos'].apply(
-            lambda x: formatar_br_inteiro(x) if pd.notna(x) else 'N/A'
-        )
+    # Formatar números
+    for col in ['creditos_emitidos', 'creditos_aposentados']:
+        if col in df_display.columns:
+            df_display[col] = df_display[col].apply(
+                lambda x: formatar_br_inteiro(x) if pd.notna(x) else 'N/A'
+            )
     
-    if 'creditos_aposentados' in df_display.columns:
-        df_display['creditos_aposentados'] = df_display['creditos_aposentados'].apply(
-            lambda x: formatar_br_inteiro(x) if pd.notna(x) else 'N/A'
-        )
+    st.dataframe(df_display, use_container_width=True, height=300)
     
-    if 'taxa_aposentadoria' in df_display.columns:
-        df_display['taxa_aposentadoria'] = df_display['taxa_aposentadoria'].apply(
-            lambda x: f"{formatar_br_dec(x, 2)}%" if pd.notna(x) else 'N/A'
-        )
-    
-    # Renomear colunas para exibição
-    col_names = {
-        'id': 'ID',
-        'nome': 'Nome do Projeto',
-        'pais': 'País',
-        'tipo': 'Tipo',
-        'registro': 'Registro',
-        'creditos_emitidos': 'Créditos Emitidos',
-        'creditos_aposentados': 'Créditos Aposentados',
-        'taxa_aposentadoria': 'Taxa de Aposentadoria'
-    }
-    
-    df_display = df_display.rename(columns=col_names)
-    
-    # Mostrar tabela
-    st.dataframe(
-        df_display.head(50),  # Limitar a 50 linhas
-        use_container_width=True,
-        height=400
-    )
-    
-    # Botão para baixar dados
-    csv = df_projetos.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="📥 Baixar todos os projetos (CSV)",
-        data=csv,
-        file_name="projetos_carbono_agricola.csv",
-        mime="text/csv"
-    )
+    # Botão para baixar
+    if st.button("📥 Baixar todos os projetos (CSV)"):
+        csv = pd.DataFrame(projetos).to_csv(index=False)
+        b64 = base64.b64encode(csv.encode()).decode()
+        href = f'<a href="data:file/csv;base64,{b64}" download="projetos_carbono.csv">Clique para baixar</a>'
+        st.markdown(href, unsafe_allow_html=True)
 
 # =========================
-# PÁGINAS PRINCIPAIS
+# PÁGINA PRINCIPAL
 # =========================
 
-def render_dashboard(df, analysis):
-    """Página principal do dashboard"""
+def main():
+    st.title("🌱 Dashboard de Análise de Projetos de Carbono Agrícola")
+    st.markdown("### Baseado em dados reais de projetos certificados")
     
-    create_hero_section(analysis)
+    # Sidebar para carregamento de dados
+    with st.sidebar:
+        st.markdown("""
+        <div style='text-align: center; padding: 1rem;'>
+            <h3 style='color: #27ae60;'>📁 Carregar Dados</h3>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        opcao = st.radio(
+            "Escolha a fonte dos dados:",
+            ["📤 Upload de arquivo", "🔗 URL do GitHub", "🧪 Dados de exemplo"]
+        )
+        
+        df = None
+        mensagem = ""
+        
+        if opcao == "📤 Upload de arquivo":
+            arquivo = st.file_uploader(
+                "Faça upload do arquivo Excel (datasetAgriculture.xlsx)",
+                type=['xlsx', 'xls']
+            )
+            
+            if arquivo is not None:
+                try:
+                    df = pd.read_excel(arquivo, engine='openpyxl')
+                    mensagem = f"✅ Arquivo carregado ({len(df)} registros)"
+                except Exception as e:
+                    mensagem = f"❌ Erro ao ler o arquivo: {e}"
+        
+        elif opcao == "🔗 URL do GitHub":
+            github_url = st.text_input(
+                "Cole a URL do arquivo no GitHub (raw link):",
+                value=""
+            )
+            
+            if github_url:
+                if "raw.githubusercontent.com" in github_url:
+                    with st.spinner("Carregando do GitHub..."):
+                        df, mensagem = load_dataset_from_github(github_url)
+                else:
+                    mensagem = "❌ URL inválida. Use um link 'raw' do GitHub."
+        
+        else:  # Dados de exemplo
+            if st.button("Carregar dados de exemplo"):
+                # Criar dados de exemplo para demonstração
+                st.info("⚠️ Carregando dados de exemplo para demonstração")
+                
+                # Criar um DataFrame de exemplo
+                dados_exemplo = {
+                    'Project ID': ['ACR103', 'CAR1459', 'GS11222', 'VCS2072'],
+                    'Project Name': ['Projeto A', 'Projeto B', 'Projeto C', 'Projeto D'],
+                    'Voluntary Registry': ['ACR', 'CAR', 'GOLD', 'VCS'],
+                    'Voluntary Status': ['Completed', 'Registered', 'Completed', 'Registered'],
+                    'Country': ['United States', 'United States', 'China', 'United Kingdom'],
+                    'Type': ['Agriculture', 'Agriculture', 'Agriculture', 'Agriculture'],
+                    'Total Credits Issued': [44202, 111645, 709594, 3303],
+                    'Total Credits Retired': [44202, 83585, 118452, 109],
+                    'Total Credits Remaining': [0, 28060, 591142, 3194],
+                    'First Year of Project': [2003, 2018, 2020, 2019]
+                }
+                
+                df = pd.DataFrame(dados_exemplo)
+                mensagem = "✅ Dados de exemplo carregados"
+        
+        st.markdown("---")
+        
+        if df is not None:
+            # Analisar dados
+            with st.spinner("Analisando projetos..."):
+                analysis = analyze_valid_projects(df)
+                st.session_state.df = df
+                st.session_state.analysis = analysis
+                st.session_state.mensagem = mensagem
+            
+            # Mostrar informações básicas
+            st.markdown("### 📊 Informações do Dataset")
+            st.write(f"**Registros:** {len(df)}")
+            st.write(f"**Colunas:** {len(df.columns)}")
+            
+            if analysis['colunas_identificadas']:
+                st.write("**Colunas identificadas:**")
+                for chave, coluna in analysis['colunas_identificadas'].items():
+                    st.write(f"  - {chave}: `{coluna}`")
+    
+    # Conteúdo principal
+    if 'analysis' not in st.session_state:
+        st.info("👈 **Carregue seus dados na barra lateral para começar a análise**")
+        st.markdown("""
+        ### 📌 Como usar este dashboard:
+        
+        1. **Carregue seus dados** usando uma das opções na barra lateral
+        2. **Visualize as estatísticas** de projetos válidos
+        3. **Analise créditos emitidos vs aposentados**
+        4. **Explore a distribuição** por país e tipo de projeto
+        
+        ### 📁 Formatos suportados:
+        - Arquivo Excel (.xlsx, .xls) - preferencialmente `datasetAgriculture.xlsx`
+        - URL do GitHub (link raw)
+        - Dados de exemplo para teste
+        """)
+        return
+    
+    # Mostrar mensagem de carregamento
+    if 'mensagem' in st.session_state:
+        if "✅" in st.session_state.mensagem:
+            st.success(st.session_state.mensagem)
+        else:
+            st.warning(st.session_state.mensagem)
+    
+    analysis = st.session_state.analysis
     
     # Cartões de resumo
     create_summary_cards(analysis)
     
-    # Gráficos principais
+    st.markdown("---")
+    
+    # Gráficos
     col1, col2 = st.columns(2)
     
     with col1:
-        create_emission_vs_retirement_chart(analysis)
+        create_comparison_chart(analysis)
     
     with col2:
-        create_projects_by_type_chart(analysis)
+        create_country_chart(analysis)
     
     # Timeline
-    st.markdown("## 📅 Timeline de Emissões e Aposentadorias")
-    create_timeline_charts(analysis)
-    
-    # Projetos por país
-    st.markdown("## 🌍 Distribuição por País")
-    create_projects_by_country_chart(analysis)
+    st.markdown("### 📅 Evolução Temporal")
+    create_timeline_chart(analysis)
     
     # Tabela de projetos
     create_projects_table(analysis)
@@ -737,234 +606,33 @@ def render_dashboard(df, analysis):
         st.markdown("""
         ### Sobre a Análise
         
-        **Critérios para projetos válidos:**
-        1. Projeto deve ter emitido créditos de carbono (Total Credits Issued > 0)
-        2. Projeto deve ter status válido (Completed, Registered, etc.)
+        **Projetos considerados válidos:**
+        - Projetos que emitiram créditos de carbono (`Total Credits Issued` > 0)
         
         **Métricas calculadas:**
-        - **Créditos emitidos:** Total de créditos de carbono gerados pelo projeto
-        - **Créditos aposentados:** Créditos que foram vendidos/retirados do mercado
-        - **Taxa de aposentadoria:** Percentual de créditos vendidos em relação aos emitidos
-        - **Créditos disponíveis:** Créditos emitidos que ainda não foram vendidos
+        1. **Créditos Emitidos:** Total de tCO₂eq gerados
+        2. **Créditos Aposentados:** Créditos vendidos/retirados do mercado
+        3. **Créditos Disponíveis:** Emitidos - Aposentados
+        4. **Taxa de Aposentadoria:** % de créditos já vendidos
         
-        **Fonte dos dados:** datasetAgriculture.xlsx (GitHub)
+        **Limitações:**
+        - A análise depende da identificação automática das colunas
+        - Algumas colunas podem ter nomes diferentes no seu arquivo
+        - Dados históricos podem estar incompletos
         """)
-
-def render_data_explorer(df):
-    """Explorador de dados brutos"""
-    
-    st.markdown("## 🔍 Explorador de Dados Brutos")
-    
-    if df is None or df.empty:
-        st.warning("Nenhum dado disponível para explorar.")
-        return
-    
-    # Filtros
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        # Filtrar por coluna
-        coluna_filtro = st.selectbox(
-            "Selecionar coluna para filtrar:",
-            options=[""] + df.columns.tolist()
-        )
-    
-    with col2:
-        if coluna_filtro:
-            valores_unicos = df[coluna_filtro].dropna().unique()
-            valor_filtro = st.selectbox(
-                f"Valor em {coluna_filtro}:",
-                options=[""] + [str(v) for v in valores_unicos[:100]]  # Limitar a 100 valores
-            )
-    
-    with col3:
-        # Limitar número de linhas
-        n_linhas = st.slider(
-            "Número de linhas a mostrar:",
-            min_value=10,
-            max_value=500,
-            value=100,
-            step=10
-        )
-    
-    # Aplicar filtros
-    df_filtrado = df.copy()
-    
-    if coluna_filtro and valor_filtro:
-        try:
-            df_filtrado = df_filtrado[df_filtrado[coluna_filtro].astype(str) == valor_filtro]
-        except:
-            st.warning(f"Não foi possível aplicar o filtro na coluna {coluna_filtro}")
-    
-    # Mostrar dados
-    st.dataframe(
-        df_filtrado.head(n_linhas),
-        use_container_width=True,
-        height=400
-    )
-    
-    # Estatísticas
-    st.markdown("### 📊 Estatísticas das Colunas")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric("Total de Linhas", formatar_br_inteiro(len(df_filtrado)))
-    
-    with col2:
-        st.metric("Total de Colunas", formatar_br_inteiro(len(df_filtrado.columns)))
-    
-    with col3:
-        # Contar valores não nulos
-        valores_nao_nulos = df_filtrado.count().sum()
-        st.metric("Valores Não Nulos", formatar_br_inteiro(valores_nao_nulos))
-    
-    # Informações sobre as colunas
-    with st.expander("📋 Informações das Colunas"):
-        colunas_info = []
         
-        for col in df_filtrado.columns:
-            tipo = str(df_filtrado[col].dtype)
-            nao_nulos = df_filtrado[col].count()
-            nulos = len(df_filtrado) - nao_nulos
-            percentual_nao_nulos = (nao_nulos / len(df_filtrado)) * 100 if len(df_filtrado) > 0 else 0
-            
-            colunas_info.append({
-                'Coluna': col,
-                'Tipo': tipo,
-                'Não Nulos': nao_nulos,
-                '% Não Nulos': f"{percentual_nao_nulos:.1f}%",
-                'Valores Únicos': df_filtrado[col].nunique()
-            })
-        
-        df_colunas = pd.DataFrame(colunas_info)
-        st.dataframe(df_colunas, use_container_width=True)
-
-# =========================
-# APLICAÇÃO PRINCIPAL
-# =========================
-
-def main():
-    st.title("🌱 Dashboard de Análise de Mercado de Carbono Agrícola")
-    st.markdown("### Baseado em dados reais de projetos certificados")
-    
-    # Sidebar
-    with st.sidebar:
-        st.markdown("""
-        <div style='text-align: center; padding: 1rem;'>
-            <h2 style='color: #27ae60;'>📊 Análise de Projetos</h2>
-            <p style='color: #7f8c8d;'>Dashboard interativo</p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Seletor de página
-        page = st.radio(
-            "Navegação",
-            ["📈 Dashboard", "🔍 Explorador de Dados", "ℹ️ Sobre"],
-            label_visibility="collapsed"
-        )
-        
-        st.markdown("---")
-        
-        # Configurações
-        st.markdown("### ⚙️ Configurações")
-        
-        # Opção de recarregar dados
-        if st.button("🔄 Recarregar Dados"):
-            st.cache_data.clear()
-            st.rerun()
-        
-        st.markdown("---")
-        
-        # Informações
-        st.markdown("### 📚 Sobre os Dados")
-        st.markdown("""
-        **Fonte:** datasetAgriculture.xlsx  
-        **Conteúdo:** Projetos agrícolas de carbono  
-        **Métrica:** tCO₂eq (toneladas de CO₂ equivalente)  
-        **Status:** Projetos que emitiram créditos
-        """)
-    
-    # Carregar dados
-    if 'df' not in st.session_state:
-        with st.spinner("Carregando dados do GitHub..."):
-            df = load_dataset_from_github()
-            if df is not None:
-                st.session_state.df = df
-                # Analisar dados
-                analysis = analyze_valid_projects(df)
-                st.session_state.analysis = analysis
-            else:
-                st.error("Não foi possível carregar os dados.")
-                return
-    else:
-        df = st.session_state.df
-        analysis = st.session_state.analysis
-    
-    # Renderizar página selecionada
-    if page == "📈 Dashboard":
-        if analysis and analysis.get('estatisticas_gerais'):
-            render_dashboard(df, analysis)
-        else:
-            st.warning("Análise em andamento...")
-    
-    elif page == "🔍 Explorador de Dados":
-        render_data_explorer(df)
-    
-    else:  # Sobre
-        st.markdown("""
-        ## ℹ️ Sobre este Dashboard
-        
-        ### Objetivo
-        Este dashboard tem como objetivo analisar projetos agrícolas de carbono que 
-        efetivamente emitiram créditos de carbono, baseando-se em dados reais.
-        
-        ### Funcionalidades
-        
-        1. **Identificação de projetos válidos:** Projetos que emitiram créditos de carbono
-        2. **Análise de créditos emitidos:** Quantidade total de créditos gerados
-        3. **Análise de créditos aposentados:** Créditos que foram vendidos/retirados
-        4. **Cálculo de disponibilidade:** Créditos ainda disponíveis para venda
-        5. **Distribuição geográfica:** Projetos por país
-        6. **Análise por tipo:** Tipos de projetos agrícolas
-        7. **Timeline:** Evolução temporal das emissões e aposentadorias
-        
-        ### Metodologia
-        
-        **Critérios de validação:**
-        - Projeto deve ter "Total Credits Issued" > 0
-        - Projeto deve ter status válido (Completed, Registered, etc.)
-        
-        **Cálculos:**
-        - Taxa de aposentadoria = (Créditos Aposentados / Créditos Emitidos) × 100
-        - Créditos Disponíveis = Créditos Emitidos - Créditos Aposentados
-        
-        ### Fonte dos Dados
-        Os dados são extraídos do arquivo `datasetAgriculture.xlsx` hospedado no GitHub,
-        que contém informações detalhadas sobre projetos agrícolas de carbono.
-        
-        ### Tecnologias Utilizadas
-        - **Streamlit:** Interface web interativa
-        - **Pandas:** Processamento de dados
-        - **Plotly:** Visualizações gráficas
-        - **GitHub:** Hospedagem dos dados
-        
-        ### Limitações
-        1. A análise depende da qualidade e completude dos dados originais
-        2. Algumas colunas podem ter nomes diferentes, requerendo ajustes manuais
-        3. Dados históricos podem estar incompletos para alguns projetos
-        
-        ### Contato
-        Para sugestões ou reportar problemas, entre em contato através do GitHub.
-        """)
-
-# =========================
-# EXECUÇÃO
-# =========================
+        # Mostrar estatísticas detalhadas
+        if analysis['estatisticas_gerais']:
+            st.markdown("### 📈 Estatísticas Detalhadas")
+            for chave, valor in analysis['estatisticas_gerais'].items():
+                if isinstance(valor, (int, float)):
+                    if valor >= 1000:
+                        valor_fmt = formatar_milhoes(valor)
+                    else:
+                        valor_fmt = formatar_br_dec(valor, 2)
+                    st.write(f"**{chave.replace('_', ' ').title()}:** {valor_fmt}")
+                else:
+                    st.write(f"**{chave.replace('_', ' ').title()}:** {valor}")
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        st.error(f"❌ Erro: {str(e)}")
-        st.info("Recarregue a página ou verifique a conexão com o GitHub.")
+    main()
