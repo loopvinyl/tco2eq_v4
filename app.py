@@ -68,7 +68,7 @@ def formatar_moeda_curta(numero):
 
 @st.cache_data(ttl=3600)
 def load_agriculture_data():
-    """Carrega apenas a aba 4.Agriculture do dataset"""
+    """Carrega apenas a aba 4. Agriculture do dataset"""
     try:
         # URL do arquivo no GitHub
         url = "https://github.com/loopvinyl/tco2eq_v4/raw/main/Dataset.xlsx"
